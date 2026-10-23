@@ -111,8 +111,10 @@ class Product(db.Model):
     active = db.Column(db.Boolean, nullable=False, default=True)
     category_id = db.Column(db.Integer, db.ForeignKey("category.id"))
     supplier_id = db.Column(db.Integer, db.ForeignKey("supplier.id"))
+    source_invoice_id = db.Column(db.Integer, db.ForeignKey("invoice.id"), index=True)
     category = db.relationship(Category)
     supplier = db.relationship(Supplier)
+    source_invoice = db.relationship("Invoice", foreign_keys=[source_invoice_id])
     created_at = db.Column(db.DateTime, nullable=False, default=now_utc)
 
 
@@ -264,7 +266,7 @@ def stock_level(product_id):
 
 def product_json(product):
     stock = stock_level(product.id)
-    return {"id": product.id, "code": product.code, "barcode": product.barcode or "", "name": product.name, "unit": product.unit, "min_stock": product.min_stock, "stock": stock, "low_stock": stock <= product.min_stock, "active": product.active, "category_id": product.category_id, "category": product.category.name if product.category else "Sem categoria", "supplier_id": product.supplier_id, "supplier": product.supplier.name if product.supplier else "Sem fornecedor"}
+    return {"id": product.id, "code": product.code, "barcode": product.barcode or "", "name": product.name, "unit": product.unit, "min_stock": product.min_stock, "stock": stock, "low_stock": stock <= product.min_stock, "active": product.active, "category_id": product.category_id, "category": product.category.name if product.category else "Sem categoria", "supplier_id": product.supplier_id, "supplier": product.supplier.name if product.supplier else "Sem fornecedor", "source_invoice_number": product.source_invoice.number if product.source_invoice else ""}
 
 
 def filtered_movements(args):
@@ -534,6 +536,69 @@ def xml_text(element, tag):
     return ""
 
 
+def supplier_from_invoice(root, name):
+    emitter = next((node for node in root.iter() if node.tag.rsplit("}", 1)[-1] == "emit"), root)
+    raw_document = xml_text(emitter, "CNPJ") or xml_text(emitter, "CPF")
+    document = "".join(character for character in raw_document if character.isdigit()) or None
+    supplier = Supplier.query.filter_by(document=document).first() if document else None
+    if not supplier:
+        supplier = Supplier.query.filter(func.lower(Supplier.name) == name.lower()).first()
+    if not supplier:
+        supplier = Supplier(name=name[:160], document=document)
+        db.session.add(supplier)
+        db.session.flush()
+    return supplier
+
+
+def product_from_invoice(code, barcode, description, unit, supplier, invoice):
+    code = code.strip()[:80]
+    barcode = barcode.strip()
+    if barcode.upper() in {"", "SEM GTIN", "NAO INFORMADO", "N/A"} or set(barcode) <= {"0"}:
+        barcode = ""
+    if barcode:
+        product = Product.query.filter_by(barcode=barcode).first()
+        if product:
+            if not product.supplier_id:
+                product.supplier = supplier
+            if not product.source_invoice_id:
+                product.source_invoice = invoice
+            return product, False
+    product = None
+    if code:
+        if supplier.document:
+            product_code = f"{supplier.id}-{code}"[:80]
+            product = Product.query.filter_by(code=product_code).first()
+        else:
+            product_code = code
+        if not product:
+            product = Product.query.filter_by(code=code).first()
+            if product and product.supplier_id not in (None, supplier.id):
+                product = None
+    else:
+        product_code = f"EAN-{barcode}"[:80] if barcode else ""
+    if product:
+        if not product.supplier_id:
+            product.supplier = supplier
+        if not product.source_invoice_id:
+            product.source_invoice = invoice
+        if barcode and not product.barcode:
+            product.barcode = barcode
+        return product, False
+    if not product_code:
+        raise ValueError(f"o item '{description}' não possui cProd nem cEAN para cadastro automático")
+    if Product.query.filter_by(code=product_code).first():
+        product_code = f"{supplier.id}-{code}"[:80] if code else f"{supplier.id}-EAN-{barcode}"[:80]
+    if not product_code or Product.query.filter_by(code=product_code).first():
+        raise ValueError(f"não foi possível gerar um código único para '{description}'")
+    product = Product(code=product_code, barcode=barcode or None, name=description[:180],
+                      unit=(unit.strip() or "un")[:12], supplier=supplier, source_invoice=invoice)
+    db.session.add(product)
+    db.session.flush()
+    audit("criar", "produto", product.id,
+          {"codigo": product.code, "codigo_fornecedor": code, "nome": product.name, "nf": invoice.number, "fornecedor": supplier.name})
+    return product, True
+
+
 def import_invoice_file(uploaded):
     if not uploaded or not uploaded.filename or not uploaded.filename.lower().endswith(".xml"):
         raise ValueError("selecione um arquivo XML de NF-e")
@@ -548,10 +613,13 @@ def import_invoice_file(uploaded):
     if Invoice.query.filter_by(access_key=access_key).first():
         raise ValueError("esta nota fiscal já foi importada")
     supplier_name = xml_text(root, "xNome") or "Fornecedor não identificado"
+    supplier = supplier_from_invoice(root, supplier_name)
     number = xml_text(root, "nNF") or access_key[-9:]
     invoice = Invoice(access_key=access_key, number=number, supplier_name=supplier_name,
                       issued_at=xml_text(root, "dhEmi") or xml_text(root, "dEmi"),
                       filename=secure_filename(uploaded.filename)[:180] or "nota.xml", imported_by=current_user)
+    db.session.add(invoice)
+    db.session.flush()
     items = []
     for detail in (node for node in root.iter() if node.tag.rsplit("}", 1)[-1] == "det"):
         code, description = xml_text(detail, "cProd"), xml_text(detail, "xProd")
@@ -560,16 +628,15 @@ def import_invoice_file(uploaded):
             continue
         quantity = positive_number(quantity_text, "Quantidade da nota")
         unit_value = positive_number(value_text or 0, "Valor unitário", allow_zero=True)
-        barcode = xml_text(detail, "cEAN")
-        product = Product.query.filter(or_(Product.code == code, Product.barcode == barcode)).first() if code or barcode else None
+        barcode = xml_text(detail, "cEAN") or xml_text(detail, "cEANTrib")
+        unit = xml_text(detail, "uCom") or xml_text(detail, "uTrib") or "un"
+        product, created = product_from_invoice(code, barcode, description, unit, supplier, invoice)
         items.append((InvoiceItem(invoice=invoice, product=product, supplier_code=code[:80] or None,
-                                  description=description[:180], quantity=quantity, unit_value=unit_value), product))
+                      description=description[:180], quantity=quantity, unit_value=unit_value), product, created))
     if not items:
         raise ValueError("nenhum item válido foi encontrado no XML")
-    db.session.add(invoice)
-    db.session.flush()
     matched = 0
-    for item, product in items:
+    for item, product, _created in items:
         db.session.add(item)
         if product and product.active:
             db.session.add(Movement(product=product, kind="entrada", quantity=item.quantity,
@@ -991,6 +1058,7 @@ with app.app_context():
     inspector = inspect(db.engine)
     movement_columns = {column["name"] for column in inspector.get_columns("movement")}
     invoice_columns = {column["name"] for column in inspector.get_columns("invoice")}
+    product_columns = {column["name"] for column in inspector.get_columns("product")}
     with db.engine.begin() as connection:
         if "invoice_id" not in movement_columns:
             connection.exec_driver_sql("ALTER TABLE movement ADD COLUMN invoice_id INTEGER REFERENCES invoice(id)")
@@ -1001,6 +1069,9 @@ with app.app_context():
             connection.exec_driver_sql("ALTER TABLE invoice ADD COLUMN cancelled_at DATETIME")
         if "cancelled_by_id" not in invoice_columns:
             connection.exec_driver_sql("ALTER TABLE invoice ADD COLUMN cancelled_by_id INTEGER REFERENCES user(id)")
+        if "source_invoice_id" not in product_columns:
+            connection.exec_driver_sql("ALTER TABLE product ADD COLUMN source_invoice_id INTEGER REFERENCES invoice(id)")
+            connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_product_source_invoice_id ON product (source_invoice_id)")
 
     for invoice in Invoice.query.filter_by(status="importada").all():
         legacy_items = InvoiceItem.query.filter_by(invoice_id=invoice.id).filter(InvoiceItem.product_id.isnot(None)).all()

@@ -98,6 +98,33 @@ class AlmoxControlTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/invoices").get_json().__len__(), 2)
         self.assertEqual(self.client.get("/api/products").get_json()[0]["stock"], 21)
 
+    def test_invoice_creates_products_supplier_and_origin_reference_automatically(self):
+        xml = b'''<NFe><infNFe Id="NFe62345678901234567890123456789012345678901234"><ide><nNF>225</nNF></ide><emit><CNPJ>12.345.678/0001-90</CNPJ><xNome>Fornecedor Novo</xNome></emit><det><prod><cProd>NOVO-001</cProd><cEAN>7901234567890</cEAN><xProd>Mouse sem fio</xProd><uCom>cx</uCom><qCom>6</qCom><vUnCom>25</vUnCom></prod></det></infNFe></NFe>'''
+        response = self.client.post("/api/invoices/import", data={"file": (BytesIO(xml), "nf-225.xml")}, headers={"X-CSRFToken": self.csrf}, content_type="multipart/form-data")
+        self.assertEqual(response.status_code, 201, response.get_json())
+        result = self.client.get("/api/products?q=NOVO-001").get_json()
+        self.assertEqual(len(result), 1)
+        product = result[0]
+        self.assertEqual(product["name"], "Mouse sem fio")
+        self.assertEqual(product["unit"], "cx")
+        self.assertEqual(product["stock"], 6)
+        self.assertEqual(product["supplier"], "Fornecedor Novo")
+        self.assertEqual(product["source_invoice_number"], "225")
+        suppliers = self.client.get("/api/suppliers").get_json()
+        supplier = next(item for item in suppliers if item["name"] == "Fornecedor Novo")
+        self.assertEqual(supplier["document"], "12345678000190")
+
+    def test_same_supplier_code_from_different_suppliers_creates_distinct_products(self):
+        first_xml = b'''<NFe><infNFe Id="NFe72345678901234567890123456789012345678901234"><ide><nNF>226</nNF></ide><emit><CNPJ>11111111000111</CNPJ><xNome>Fornecedor Um</xNome></emit><det><prod><cProd>EXT-01</cProd><cEAN>7900000000011</cEAN><xProd>Produto do fornecedor um</xProd><uCom>un</uCom><qCom>2</qCom><vUnCom>10</vUnCom></prod></det></infNFe></NFe>'''
+        second_xml = b'''<NFe><infNFe Id="NFe82345678901234567890123456789012345678901234"><ide><nNF>227</nNF></ide><emit><CNPJ>22222222000122</CNPJ><xNome>Fornecedor Dois</xNome></emit><det><prod><cProd>EXT-01</cProd><cEAN>7900000000028</cEAN><xProd>Produto do fornecedor dois</xProd><uCom>un</uCom><qCom>3</qCom><vUnCom>10</vUnCom></prod></det></infNFe></NFe>'''
+        response = self.client.post("/api/invoices/import", data={"files": [(BytesIO(first_xml), "nf-226.xml"), (BytesIO(second_xml), "nf-227.xml")]}, headers={"X-CSRFToken": self.csrf}, content_type="multipart/form-data")
+        self.assertEqual(response.status_code, 200, response.get_json())
+        first = self.client.get("/api/products?q=Produto%20do%20fornecedor%20um").get_json()
+        second = self.client.get("/api/products?q=Produto%20do%20fornecedor%20dois").get_json()
+        self.assertEqual(len(first), 1)
+        self.assertEqual(len(second), 1)
+        self.assertNotEqual(first[0]["code"], second[0]["code"])
+
     def test_delete_invoice_cancels_and_reverses_only_its_stock_entries(self):
         xml = b'''<NFe><infNFe Id="NFe42345678901234567890123456789012345678901234"><ide><nNF>223</nNF></ide><emit><xNome>Fornecedor XML</xNome></emit><det><prod><cProd>PRD-001</cProd><cEAN>7891234567890</cEAN><xProd>Leitor industrial</xProd><qCom>4</qCom><vUnCom>10</vUnCom></prod></det></infNFe></NFe>'''
         imported = self.client.post("/api/invoices/import", data={"file": (BytesIO(xml), "nf.xml")}, headers={"X-CSRFToken": self.csrf}, content_type="multipart/form-data")

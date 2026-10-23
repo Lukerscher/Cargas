@@ -35,7 +35,7 @@ O primeiro administrador é criado pelo comando `flask --app app create-admin`, 
 - Relatórios filtráveis por período, produto, categoria, fornecedor e responsável, exportados em CSV e Excel.
 - Backup íntegro do SQLite por download e restauração com verificação de integridade.
 
-O XML é processado localmente usando bibliotecas convencionais. O vínculo dos produtos da NF-e é feito pelo código do fornecedor ou código de barras, então o catálogo precisa estar preparado antes da importação para que os itens movimentem o estoque automaticamente.
+O XML é processado localmente usando bibliotecas convencionais. Itens ainda não cadastrados criam produtos com descrição, unidade, código do fornecedor ou código de barras, fornecedor, estoque inicial e referência da primeira NF de origem. Códigos de fornecedor iguais de fornecedores diferentes geram registros separados; um GTIN já conhecido reutiliza o produto existente. Itens sem código de fornecedor e sem código de barras não podem ser cadastrados automaticamente e fazem aquela NF falhar sem criar entrada parcial.
 
 ## Testes
 
