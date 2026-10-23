@@ -28,7 +28,8 @@ O primeiro administrador é criado pelo comando `flask --app app create-admin`, 
 
 - Cadastro de produtos, categorias, fornecedores, código de barras e estoque mínimo.
 - Entradas, saídas e ajustes com usuário, horário e referência. O sistema bloqueia saídas acima do saldo disponível.
-- Importação convencional de XML de NF-e, com bloqueio por chave duplicada e entrada automática dos itens associados ao catálogo.
+- Importação de até 20 XML de NF-e por lote, com resultado individual por arquivo, bloqueio por chave duplicada e entrada automática dos itens associados ao catálogo.
+- Exclusão auditada de NF-e com estorno das entradas vinculadas. A exclusão é bloqueada se o saldo tiver sido consumido ou se a origem dos movimentos não puder ser confirmada.
 - Conferência de cargas com leitura única por produto e registro da quantidade total, sem somar leituras repetidas.
 - Inventário físico que compara saldos e aplica ajustes ao ser concluído.
 - Relatórios filtráveis por período, produto, categoria, fornecedor e responsável, exportados em CSV e Excel.

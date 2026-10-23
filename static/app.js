@@ -156,6 +156,8 @@ function renderField(field) {
     input = `<select class="select" name="${escapeHtml(field.name)}"${required}><option value="">${escapeHtml(field.placeholder || "Selecione")}</option>${options.map((option) => `<option value="${escapeHtml(option.value)}">${escapeHtml(option.label)}</option>`).join("")}</select>`;
   } else if (field.type === "checkbox") {
     input = `<input type="checkbox" name="${escapeHtml(field.name)}" value="true" ${field.checked ? "checked" : ""}>`;
+  } else if (field.type === "file") {
+    input = `<input class="input" type="file" name="${escapeHtml(field.name)}" ${field.accept ? `accept="${escapeHtml(field.accept)}"` : ""} ${field.multiple ? "multiple" : ""}${required}>`;
   } else {
     input = `<input class="input" type="${escapeHtml(field.type || "text")}" name="${escapeHtml(field.name)}" placeholder="${escapeHtml(field.placeholder || "")}" ${field.min !== undefined ? `min="${field.min}"` : ""} ${field.step ? `step="${field.step}"` : ""}${required} autocomplete="${field.autocomplete || "off"}">`;
   }
@@ -238,8 +240,8 @@ async function renderStock() {
 
 async function renderInvoices() {
   const invoices = await api("/api/invoices");
-  const rows = invoices.map((invoice) => `<tr><td><span class="table-primary">NF ${escapeHtml(invoice.number)}</span><span class="table-secondary">${escapeHtml(invoice.filename)}</span></td><td>${escapeHtml(invoice.supplier)}</td><td>${escapeHtml(invoice.issued_at || "-")}</td><td><span class="table-primary">${invoice.items}</span></td><td>${escapeHtml(invoice.imported_by)}</td><td>${formatDate(invoice.imported_at)}</td><td>${statusPill("Importada", "ok")}</td></tr>`);
-  content.innerHTML = `${intro("Notas fiscais", "Importe XML de NF-e. Itens vinculados a produtos geram entradas automaticamente.", canStock ? `<button class="button button-primary" data-action="import-invoice">↑ Importar XML</button>` : "")}${panel("Notas importadas", table(["Documento", "Fornecedor", "Emissão", "Itens", "Importada por", "Importação", "Situação"], rows, invoices.length), { subtitle: "O XML é processado localmente, sem serviços de IA" })}`;
+  const rows = invoices.map((invoice) => `<tr><td><span class="table-primary">NF ${escapeHtml(invoice.number)}</span><span class="table-secondary">${escapeHtml(invoice.filename)}</span></td><td>${escapeHtml(invoice.supplier)}</td><td>${escapeHtml(invoice.issued_at || "-")}</td><td><span class="table-primary">${invoice.items}</span></td><td>${escapeHtml(invoice.imported_by)}</td><td>${formatDate(invoice.imported_at)}</td><td>${statusPill("Importada", "ok")}</td><td>${canStock ? `<button class="button button-small button-danger" data-action="delete-invoice" data-id="${invoice.id}" data-number="${escapeHtml(invoice.number)}">Excluir</button>` : ""}</td></tr>`);
+  content.innerHTML = `${intro("Notas fiscais", "Importe vários XML de NF-e de uma vez. A exclusão estorna as entradas vinculadas ao estoque.", canStock ? `<button class="button button-primary" data-action="import-invoice">↑ Importar XML</button>` : "")}${panel("Notas importadas", table(["Documento", "Fornecedor", "Emissão", "Itens", "Importada por", "Importação", "Situação", "Ações"], rows, invoices.length), { subtitle: "Até 20 XML por lote; processamento local sem serviços de IA" })}`;
 }
 
 async function renderLoads() {
@@ -386,16 +388,22 @@ document.addEventListener("click", async (event) => {
       });
     }
     if (action === "import-invoice") {
-      openForm("Importar nota fiscal XML", [{ name: "file", label: "Arquivo XML de NF-e", type: "file", required: true, full: true }], async (_data) => {
+      openForm("Importar notas fiscais XML", [{ name: "files", label: "Arquivos XML de NF-e (até 20 arquivos)", type: "file", accept: ".xml,text/xml,application/xml", multiple: true, required: true, full: true }], async (_data) => {
+        const selectedFiles = [...dialogContent.querySelector('[name="files"]').files];
+        if (!selectedFiles.length) throw new Error("Selecione pelo menos um arquivo XML.");
+        if (selectedFiles.length > 20) throw new Error("Selecione no máximo 20 notas por lote.");
         const formData = new FormData();
-        formData.append("file", dialogContent.querySelector('[name="file"]').files[0]);
+        selectedFiles.forEach((file) => formData.append("files", file));
         const result = await api("/api/invoices/import", { method: "POST", body: formData });
-        toast(`NF ${result.number} importada; ${result.stocked} produto(s) tiveram entrada no estoque.`);
+        toast(`${result.imported} nota(s) importada(s); ${result.failed} falha(s).`, result.failed ? "error" : "success");
+        result.results.filter((item) => !item.ok).slice(0, 3).forEach((item) => toast(`${item.filename}: ${item.error}`, "error"));
         await renderInvoices();
-      }, "A chave de acesso impede que a mesma nota seja importada novamente.");
-      const file = dialogContent.querySelector('[name="file"]');
-      file.className = "input";
-      file.accept = ".xml,text/xml,application/xml";
+      }, "Cada nota é validada individualmente. A chave de acesso bloqueia importações repetidas.");
+    }
+    if (action === "delete-invoice" && window.confirm(`Excluir a NF ${button.dataset.number}? As entradas vinculadas serão estornadas. Se o estoque já tiver sido consumido, a exclusão será bloqueada.`)) {
+      const result = await api(`/api/invoices/${id}`, { method: "DELETE" });
+      toast(result.message);
+      await renderInvoices();
     }
     if (action === "new-load") openForm("Abrir carga", [
       { name: "reference", label: "Referência da carga", required: true, placeholder: "Ex.: CARGA-2026-001" },

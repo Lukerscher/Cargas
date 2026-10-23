@@ -5,6 +5,7 @@ import math
 import os
 import secrets
 import sqlite3
+from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -17,7 +18,7 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_wtf.csrf import CSRFError, CSRFProtect, generate_csrf
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
-from sqlalchemy import event, func, or_
+from sqlalchemy import event, func, inspect, or_
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
@@ -122,9 +123,11 @@ class Movement(db.Model):
     quantity = db.Column(db.Float, nullable=False)
     reference = db.Column(db.String(180))
     responsible_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    invoice_id = db.Column(db.Integer, db.ForeignKey("invoice.id"), index=True)
     created_at = db.Column(db.DateTime, nullable=False, default=now_utc, index=True)
     product = db.relationship(Product)
     responsible = db.relationship(User)
+    invoice = db.relationship("Invoice", foreign_keys=[invoice_id])
 
 
 class Invoice(db.Model):
@@ -136,7 +139,11 @@ class Invoice(db.Model):
     filename = db.Column(db.String(180), nullable=False)
     imported_by_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
     imported_at = db.Column(db.DateTime, nullable=False, default=now_utc)
-    imported_by = db.relationship(User)
+    status = db.Column(db.String(16), nullable=False, default="importada")
+    cancelled_at = db.Column(db.DateTime)
+    cancelled_by_id = db.Column(db.Integer, db.ForeignKey("user.id"))
+    imported_by = db.relationship(User, foreign_keys=[imported_by_id])
+    cancelled_by = db.relationship(User, foreign_keys=[cancelled_by_id])
     items = db.relationship("InvoiceItem", cascade="all, delete-orphan", back_populates="invoice")
 
 
@@ -527,59 +534,113 @@ def xml_text(element, tag):
     return ""
 
 
+def import_invoice_file(uploaded):
+    if not uploaded or not uploaded.filename or not uploaded.filename.lower().endswith(".xml"):
+        raise ValueError("selecione um arquivo XML de NF-e")
+    data = uploaded.stream.read(10 * 1024 * 1024 + 1)
+    if len(data) > 10 * 1024 * 1024:
+        raise ValueError("o XML excede o limite de 10 MB")
+    root = SafeET.fromstring(data)
+    info = next((node for node in root.iter() if node.tag.rsplit("}", 1)[-1] == "infNFe"), root)
+    access_key = str(info.attrib.get("Id", "")).removeprefix("NFe") or xml_text(root, "chNFe")
+    if len(access_key) < 20:
+        raise ValueError("a chave de acesso da NF-e não foi encontrada")
+    if Invoice.query.filter_by(access_key=access_key).first():
+        raise ValueError("esta nota fiscal já foi importada")
+    supplier_name = xml_text(root, "xNome") or "Fornecedor não identificado"
+    number = xml_text(root, "nNF") or access_key[-9:]
+    invoice = Invoice(access_key=access_key, number=number, supplier_name=supplier_name,
+                      issued_at=xml_text(root, "dhEmi") or xml_text(root, "dEmi"),
+                      filename=secure_filename(uploaded.filename)[:180] or "nota.xml", imported_by=current_user)
+    items = []
+    for detail in (node for node in root.iter() if node.tag.rsplit("}", 1)[-1] == "det"):
+        code, description = xml_text(detail, "cProd"), xml_text(detail, "xProd")
+        quantity_text, value_text = xml_text(detail, "qCom"), xml_text(detail, "vUnCom")
+        if not description or not quantity_text:
+            continue
+        quantity = positive_number(quantity_text, "Quantidade da nota")
+        unit_value = positive_number(value_text or 0, "Valor unitário", allow_zero=True)
+        barcode = xml_text(detail, "cEAN")
+        product = Product.query.filter(or_(Product.code == code, Product.barcode == barcode)).first() if code or barcode else None
+        items.append((InvoiceItem(invoice=invoice, product=product, supplier_code=code[:80] or None,
+                                  description=description[:180], quantity=quantity, unit_value=unit_value), product))
+    if not items:
+        raise ValueError("nenhum item válido foi encontrado no XML")
+    db.session.add(invoice)
+    db.session.flush()
+    matched = 0
+    for item, product in items:
+        db.session.add(item)
+        if product and product.active:
+            db.session.add(Movement(product=product, kind="entrada", quantity=item.quantity,
+                                    reference=f"NF-e {number}", responsible=current_user, invoice=invoice))
+            matched += 1
+    audit("importar", "nota_fiscal", invoice.id, {"numero": number, "chave": access_key, "itens": len(items)})
+    db.session.commit()
+    return {"id": invoice.id, "number": number, "items": len(items), "stocked": matched, "unmatched": len(items) - matched}
+
+
 @app.get("/api/invoices")
 @login_required
 def invoices_list():
-    invoices = Invoice.query.order_by(Invoice.imported_at.desc()).limit(300).all()
-    return jsonify([{"id": i.id, "number": i.number, "supplier": i.supplier_name, "issued_at": i.issued_at or "", "access_key": i.access_key, "filename": i.filename, "items": len(i.items), "imported_by": i.imported_by.name, "imported_at": i.imported_at.isoformat(timespec="minutes")} for i in invoices])
+    invoices = Invoice.query.filter_by(status="importada").order_by(Invoice.imported_at.desc()).limit(300).all()
+    return jsonify([{"id": i.id, "number": i.number, "supplier": i.supplier_name, "issued_at": i.issued_at or "", "access_key": i.access_key, "filename": i.filename, "items": len(i.items), "imported_by": i.imported_by.name, "imported_at": i.imported_at.isoformat(timespec="minutes"), "status": i.status} for i in invoices])
 
 
 @app.post("/api/invoices/import")
 @roles_required("administrador", "almoxarife")
 def invoice_import():
-    uploaded = request.files.get("file")
-    if not uploaded or not uploaded.filename.lower().endswith(".xml"):
-        return jsonify(error="Selecione um arquivo XML de nota fiscal."), 400
-    try:
-        data = uploaded.stream.read(10 * 1024 * 1024 + 1)
-        if len(data) > 10 * 1024 * 1024:
-            raise ValueError("O XML da nota excede o limite de 10 MB.")
-        root = SafeET.fromstring(data)
-        info = next((node for node in root.iter() if node.tag.rsplit("}", 1)[-1] == "infNFe"), root)
-        access_key = str(info.attrib.get("Id", "")).removeprefix("NFe") or xml_text(root, "chNFe")
-        if len(access_key) < 20:
-            raise ValueError("A chave de acesso da NF-e não foi encontrada.")
-        if Invoice.query.filter_by(access_key=access_key).first():
-            raise ValueError("Esta nota fiscal já foi importada.")
-        supplier_name, number = xml_text(root, "xNome") or "Fornecedor não identificado", xml_text(root, "nNF") or access_key[-9:]
-        invoice = Invoice(access_key=access_key, number=number, supplier_name=supplier_name, issued_at=xml_text(root, "dhEmi") or xml_text(root, "dEmi"), filename=secure_filename(uploaded.filename)[:180] or "nota.xml", imported_by=current_user)
-        items = []
-        for detail in (node for node in root.iter() if node.tag.rsplit("}", 1)[-1] == "det"):
-            code, description = xml_text(detail, "cProd"), xml_text(detail, "xProd")
-            quantity_text, value_text = xml_text(detail, "qCom"), xml_text(detail, "vUnCom")
-            if not description or not quantity_text:
-                continue
-            quantity = positive_number(quantity_text, "Quantidade da nota")
-            unit_value = positive_number(value_text or 0, "Valor unitário", allow_zero=True)
-            barcode = xml_text(detail, "cEAN")
-            product = Product.query.filter(or_(Product.code == code, Product.barcode == barcode)).first() if code or barcode else None
-            items.append((InvoiceItem(invoice=invoice, product=product, supplier_code=code[:80] or None, description=description[:180], quantity=quantity, unit_value=unit_value), product))
-        if not items:
-            raise ValueError("Nenhum item válido foi encontrado no XML da nota.")
-        db.session.add(invoice)
-        db.session.flush()
-        matched = 0
-        for item, product in items:
-            db.session.add(item)
-            if product and product.active:
-                db.session.add(Movement(product=product, kind="entrada", quantity=item.quantity, reference=f"NF-e {number}", responsible=current_user))
-                matched += 1
-        audit("importar", "nota_fiscal", invoice.id, {"numero": number, "chave": access_key, "itens": len(items)})
-        db.session.commit()
-        return jsonify({"id": invoice.id, "number": number, "items": len(items), "stocked": matched, "unmatched": len(items) - matched}), 201
-    except (ValueError, TypeError, StdET.ParseError) as error:
-        db.session.rollback()
-        return jsonify(error=f"XML não importado: {error}"), 400
+    uploads = request.files.getlist("files") or request.files.getlist("file")
+    if not uploads:
+        return jsonify(error="Selecione ao menos um arquivo XML de nota fiscal."), 400
+    if len(uploads) > 20:
+        return jsonify(error="Importe no máximo 20 notas por lote."), 400
+    results = []
+    for uploaded in uploads:
+        try:
+            result = import_invoice_file(uploaded)
+            results.append({"filename": secure_filename(uploaded.filename), "ok": True, **result})
+        except (ValueError, TypeError, StdET.ParseError) as error:
+            db.session.rollback()
+            results.append({"filename": secure_filename(uploaded.filename or "arquivo"), "ok": False, "error": str(error)})
+    imported = sum(1 for result in results if result["ok"])
+    failed = len(results) - imported
+    response = {"results": results, "imported": imported, "failed": failed}
+    if len(results) == 1 and imported:
+        response.update({key: value for key, value in results[0].items() if key not in {"ok", "filename"}})
+        return jsonify(response), 201
+    return jsonify(response), 207 if imported and failed else 200 if imported else 400
+
+
+@app.delete("/api/invoices/<int:invoice_id>")
+@roles_required("administrador", "almoxarife")
+def invoice_delete(invoice_id):
+    invoice = db.get_or_404(Invoice, invoice_id)
+    if invoice.status != "importada":
+        return jsonify(error="Esta nota já foi excluída."), 400
+    items = InvoiceItem.query.filter_by(invoice_id=invoice.id).filter(InvoiceItem.product_id.isnot(None)).all()
+    incoming = Movement.query.filter_by(invoice_id=invoice.id, kind="entrada").all()
+    expected_entries = Counter((item.product_id, item.quantity) for item in items if item.product)
+    linked_entries = Counter((movement.product_id, movement.quantity) for movement in incoming)
+    if expected_entries != linked_entries:
+        return jsonify(error="Não foi possível identificar com segurança todas as entradas desta nota. Confira os movimentos vinculados antes de excluir."), 409
+    totals = {}
+    for movement in incoming:
+        totals[movement.product_id] = totals.get(movement.product_id, 0) + movement.quantity
+    for product_id, quantity in totals.items():
+        if stock_level(product_id) < quantity:
+            product = db.session.get(Product, product_id)
+            return jsonify(error=f"Não é possível excluir a NF-e: o estoque de {product.name} já foi consumido. Faça um ajuste de estoque após conferir a operação."), 409
+    for product_id, quantity in totals.items():
+        db.session.add(Movement(product_id=product_id, kind="saida", quantity=quantity,
+                                reference=f"Estorno NF-e {invoice.number} #{invoice.access_key[-8:]}",
+                                responsible=current_user, invoice_id=invoice.id))
+    invoice.status = "excluida"
+    invoice.cancelled_at = now_utc()
+    invoice.cancelled_by = current_user
+    audit("excluir", "nota_fiscal", invoice.id, {"numero": invoice.number, "chave": invoice.access_key, "itens_estornados": len(totals)})
+    db.session.commit()
+    return jsonify(ok=True, message="Nota excluída e entradas de estoque estornadas.")
 
 
 @app.get("/api/loads")
@@ -927,6 +988,38 @@ with app.app_context():
         cursor.close()
 
     db.create_all()
+    inspector = inspect(db.engine)
+    movement_columns = {column["name"] for column in inspector.get_columns("movement")}
+    invoice_columns = {column["name"] for column in inspector.get_columns("invoice")}
+    with db.engine.begin() as connection:
+        if "invoice_id" not in movement_columns:
+            connection.exec_driver_sql("ALTER TABLE movement ADD COLUMN invoice_id INTEGER REFERENCES invoice(id)")
+            connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_movement_invoice_id ON movement (invoice_id)")
+        if "status" not in invoice_columns:
+            connection.exec_driver_sql("ALTER TABLE invoice ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'importada'")
+        if "cancelled_at" not in invoice_columns:
+            connection.exec_driver_sql("ALTER TABLE invoice ADD COLUMN cancelled_at DATETIME")
+        if "cancelled_by_id" not in invoice_columns:
+            connection.exec_driver_sql("ALTER TABLE invoice ADD COLUMN cancelled_by_id INTEGER REFERENCES user(id)")
+
+    for invoice in Invoice.query.filter_by(status="importada").all():
+        legacy_items = InvoiceItem.query.filter_by(invoice_id=invoice.id).filter(InvoiceItem.product_id.isnot(None)).all()
+        expected = Counter((item.product_id, item.quantity) for item in legacy_items if item.product)
+        if not expected:
+            continue
+        window_end = invoice.imported_at + timedelta(seconds=30)
+        candidates = Movement.query.filter(
+            Movement.invoice_id.is_(None),
+            Movement.kind == "entrada",
+            Movement.responsible_id == invoice.imported_by_id,
+            Movement.reference == f"NF-e {invoice.number}",
+            Movement.created_at >= invoice.imported_at,
+            Movement.created_at <= window_end,
+        ).all()
+        if Counter((movement.product_id, movement.quantity) for movement in candidates) == expected:
+            for movement in candidates:
+                movement.invoice_id = invoice.id
+    db.session.commit()
 
 
 if __name__ == "__main__":

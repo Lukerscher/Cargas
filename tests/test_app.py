@@ -87,6 +87,37 @@ class AlmoxControlTests(unittest.TestCase):
         product = self.client.get("/api/products").get_json()[0]
         self.assertEqual(product["stock"], 19)
 
+    def test_multiple_invoice_xml_files_import_in_one_request(self):
+        first_xml = b'''<NFe><infNFe Id="NFe22345678901234567890123456789012345678901234"><ide><nNF>221</nNF></ide><emit><xNome>Fornecedor XML</xNome></emit><det><prod><cProd>PRD-001</cProd><cEAN>7891234567890</cEAN><xProd>Leitor industrial</xProd><qCom>4</qCom><vUnCom>10</vUnCom></prod></det></infNFe></NFe>'''
+        second_xml = b'''<NFe><infNFe Id="NFe32345678901234567890123456789012345678901234"><ide><nNF>222</nNF></ide><emit><xNome>Fornecedor XML</xNome></emit><det><prod><cProd>PRD-001</cProd><cEAN>7891234567890</cEAN><xProd>Leitor industrial</xProd><qCom>2</qCom><vUnCom>10</vUnCom></prod></det></infNFe></NFe>'''
+        response = self.client.post("/api/invoices/import", data={"files": [(BytesIO(first_xml), "nf-221.xml"), (BytesIO(second_xml), "nf-222.xml")]}, headers={"X-CSRFToken": self.csrf}, content_type="multipart/form-data")
+        self.assertEqual(response.status_code, 200, response.get_json())
+        result = response.get_json()
+        self.assertEqual(result["imported"], 2)
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(self.client.get("/api/invoices").get_json().__len__(), 2)
+        self.assertEqual(self.client.get("/api/products").get_json()[0]["stock"], 21)
+
+    def test_delete_invoice_cancels_and_reverses_only_its_stock_entries(self):
+        xml = b'''<NFe><infNFe Id="NFe42345678901234567890123456789012345678901234"><ide><nNF>223</nNF></ide><emit><xNome>Fornecedor XML</xNome></emit><det><prod><cProd>PRD-001</cProd><cEAN>7891234567890</cEAN><xProd>Leitor industrial</xProd><qCom>4</qCom><vUnCom>10</vUnCom></prod></det></infNFe></NFe>'''
+        imported = self.client.post("/api/invoices/import", data={"file": (BytesIO(xml), "nf.xml")}, headers={"X-CSRFToken": self.csrf}, content_type="multipart/form-data")
+        invoice_id = imported.get_json()["id"]
+        deleted = self.client.delete(f"/api/invoices/{invoice_id}", headers={"X-CSRFToken": self.csrf})
+        self.assertEqual(deleted.status_code, 200, deleted.get_json())
+        self.assertEqual(self.client.get("/api/products").get_json()[0]["stock"], 15)
+        self.assertEqual(self.client.get("/api/invoices").get_json(), [])
+        duplicate = self.client.post("/api/invoices/import", data={"file": (BytesIO(xml), "nf.xml")}, headers={"X-CSRFToken": self.csrf}, content_type="multipart/form-data")
+        self.assertEqual(duplicate.status_code, 400)
+
+    def test_invoice_delete_is_blocked_when_receipt_stock_was_consumed(self):
+        xml = b'''<NFe><infNFe Id="NFe52345678901234567890123456789012345678901234"><ide><nNF>224</nNF></ide><emit><xNome>Fornecedor XML</xNome></emit><det><prod><cProd>PRD-001</cProd><cEAN>7891234567890</cEAN><xProd>Leitor industrial</xProd><qCom>10</qCom><vUnCom>10</vUnCom></prod></det></infNFe></NFe>'''
+        imported = self.client.post("/api/invoices/import", data={"file": (BytesIO(xml), "nf.xml")}, headers={"X-CSRFToken": self.csrf}, content_type="multipart/form-data")
+        invoice_id = imported.get_json()["id"]
+        self.post_json("/api/movements", {"product_id": self.product_id, "kind": "saida", "quantity": 16})
+        deleted = self.client.delete(f"/api/invoices/{invoice_id}", headers={"X-CSRFToken": self.csrf})
+        self.assertEqual(deleted.status_code, 409)
+        self.assertEqual(self.client.get("/api/products").get_json()[0]["stock"], 9)
+
     def test_inventory_counts_and_adjusts_stock_when_closed(self):
         created = self.post_json("/api/inventories", {"reference": "INV-001"})
         inventory_id = created.get_json()["id"]
