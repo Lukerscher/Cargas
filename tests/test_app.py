@@ -129,6 +129,8 @@ class AlmoxControlTests(unittest.TestCase):
         xml = b'''<NFe><infNFe Id="NFe42345678901234567890123456789012345678901234"><ide><nNF>223</nNF></ide><emit><xNome>Fornecedor XML</xNome></emit><det><prod><cProd>PRD-001</cProd><cEAN>7891234567890</cEAN><xProd>Leitor industrial</xProd><qCom>4</qCom><vUnCom>10</vUnCom></prod></det></infNFe></NFe>'''
         imported = self.client.post("/api/invoices/import", data={"file": (BytesIO(xml), "nf.xml")}, headers={"X-CSRFToken": self.csrf}, content_type="multipart/form-data")
         invoice_id = imported.get_json()["id"]
+        missing_token = self.client.delete(f"/api/invoices/{invoice_id}")
+        self.assertEqual(missing_token.status_code, 400)
         deleted = self.client.delete(f"/api/invoices/{invoice_id}", headers={"X-CSRFToken": self.csrf})
         self.assertEqual(deleted.status_code, 200, deleted.get_json())
         self.assertEqual(self.client.get("/api/products").get_json()[0]["stock"], 15)

@@ -45,11 +45,12 @@ if (!canStock) {
 
 async function api(url, options = {}) {
   const headers = new Headers(options.headers || {});
-  if (options.body instanceof FormData) {
+  const method = (options.method || "GET").toUpperCase();
+  if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
     headers.set("X-CSRFToken", csrfToken);
-  } else if (options.body !== undefined) {
+  }
+  if (options.body !== undefined && !(options.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
-    headers.set("X-CSRFToken", csrfToken);
   }
   const response = await fetch(url, { ...options, headers, credentials: "same-origin" });
   const type = response.headers.get("content-type") || "";
