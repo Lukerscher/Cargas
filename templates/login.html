@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f4f7fb">
+  <title>Entrar | AlmoxControl</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body class="login-body">
+  <main class="login-layout">
+    <section class="login-aside">
+      <a class="brand brand-light" href="{{ url_for('login') }}"><span class="brand-symbol">A</span> AlmoxControl</a>
+      <div class="login-message">
+        <span class="eyebrow eyebrow-light">GESTÃO DE ESTOQUE</span>
+        <h1>Visibilidade para cada <span>movimento.</span></h1>
+        <p>Produtos, entradas, conferência e inventário no mesmo lugar.</p>
+      </div>
+      <div class="login-aside-foot"><span class="live-dot"></span> Plataforma operacional</div>
+    </section>
+    <section class="login-main">
+      <form class="login-card" action="{{ url_for('login_submit') }}" method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <span class="eyebrow">BEM-VINDO DE VOLTA</span>
+        <h2>Acessar sua conta</h2>
+        <p class="login-subtitle">Entre com as credenciais do AlmoxControl.</p>
+        {% if error %}<div class="alert alert-error" role="alert">{{ error }}</div>{% endif %}
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% for category, message in messages %}<div class="alert alert-{{ category }}" role="status">{{ message }}</div>{% endfor %}
+        {% endwith %}
+        <label class="field-label" for="email">E-mail</label>
+        <input class="text-input" id="email" type="email" name="email" autocomplete="username" placeholder="nome@empresa.com.br" required autofocus>
+        <label class="field-label" for="password">Senha</label>
+        <input class="text-input" id="password" type="password" name="password" autocomplete="current-password" placeholder="Sua senha" required>
+        <button class="button button-primary button-wide" type="submit">Entrar <span aria-hidden="true">→</span></button>
+        <p class="setup-hint">Primeiro acesso? Crie o administrador com <code>flask --app app create-admin</code>.</p>
+      </form>
+    </section>
+  </main>
+</body>
+</html>

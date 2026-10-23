@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf_token }}">
+  <meta name="theme-color" content="#f4f7fb">
+  <title>AlmoxControl | Gestão de estoque</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <script src="{{ url_for('static', filename='app.js') }}" defer></script>
+</head>
+<body data-user='{{ user|tojson }}'>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <a class="brand" href="#inicio" data-page="inicio"><span class="brand-symbol">A</span><span>Almox<span class="brand-accent">Control</span></span></a>
+      <div class="sidebar-label">OPERAÇÃO</div>
+      <nav class="side-nav" aria-label="Navegação principal">
+        <button class="nav-item active" data-page="inicio"><span class="nav-icon">⌂</span>Início</button>
+        <button class="nav-item" data-page="produtos"><span class="nav-icon">▦</span>Produtos</button>
+        <button class="nav-item" data-page="estoque"><span class="nav-icon">⇄</span>Estoque</button>
+        <button class="nav-item" data-page="notas"><span class="nav-icon">▤</span>Notas fiscais</button>
+        <button class="nav-item" data-page="cargas"><span class="nav-icon">▣</span>Conferência de cargas</button>
+        <button class="nav-item" data-page="cargas-lista"><span class="nav-icon">⇢</span>Cargas</button>
+        <button class="nav-item" data-page="inventario"><span class="nav-icon">☷</span>Inventário</button>
+        <button class="nav-item" data-page="relatorios"><span class="nav-icon">▥</span>Relatórios</button>
+      </nav>
+      <div class="sidebar-label sidebar-label-admin">ADMINISTRAÇÃO</div>
+      <nav class="side-nav admin-nav" aria-label="Administração">
+        <button class="nav-item" data-page="usuarios"><span class="nav-icon">♙</span>Usuários</button>
+        <button class="nav-item" data-page="configuracoes"><span class="nav-icon">⚙</span>Configurações</button>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="online-indicator"><span class="live-dot"></span>Banco de dados local</div>
+        <div class="user-card"><span class="avatar" id="user-avatar"></span><span class="user-card-copy"><strong id="user-name"></strong><small id="user-role"></small></span><form action="{{ url_for('logout') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="icon-button logout-button" type="submit" title="Sair" aria-label="Sair">↗</button></form></div>
+      </div>
+    </aside>
+    <div class="mobile-backdrop" id="mobile-backdrop"></div>
+    <main class="main-area">
+      <header class="topbar">
+        <button class="icon-button mobile-menu-button" id="mobile-menu" aria-label="Abrir menu" title="Abrir menu">☰</button>
+        <div><span class="breadcrumb" id="breadcrumb">VISÃO GERAL</span><h1 class="page-heading" id="page-heading">Início</h1></div>
+        <div class="topbar-right"><span class="today-label" id="today-label"></span><span class="topbar-avatar" id="topbar-avatar"></span></div>
+      </header>
+      <div class="page-content" id="page-content" aria-live="polite"></div>
+    </main>
+  </div>
+  <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+  <dialog class="form-dialog" id="form-dialog"><div class="dialog-content" id="dialog-content"></div></dialog>
+</body>
+</html>
