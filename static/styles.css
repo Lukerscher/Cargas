@@ -89,6 +89,8 @@ a { color: inherit; }
 .field { min-width: 0; display: grid; gap: 5px; }
 .field label, .field-label { color: #607186; font-size: 10px; font-weight: 600; }
 .input, .select, .textarea { width: 100%; min-width: 0; height: 36px; padding: 0 10px; color: #27384f; background: #fff; border: 1px solid #dce4ed; border-radius: 5px; outline: none; font-size: 11px; }
+.select[multiple] { height: 132px; padding: 5px; }
+.select[multiple] option { padding: 7px 6px; }
 .textarea { height: auto; min-height: 76px; padding-block: 8px; resize: vertical; }
 .input:focus, .select:focus, .textarea:focus { border-color: #6ea8dc; box-shadow: 0 0 0 3px #e6f1fb; }
 .input::placeholder { color: #aab5c1; }

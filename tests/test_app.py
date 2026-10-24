@@ -78,6 +78,32 @@ class AlmoxControlTests(unittest.TestCase):
         self.assertEqual(detail["items"][0]["checked"], 18)
         self.assertEqual(detail["items"][0]["expected"], 20)
 
+    def test_load_created_from_invoice_prefills_items_and_scans_against_expected(self):
+        xml = b'''<NFe><infNFe Id="NFe92345678901234567890123456789012345678901234"><ide><nNF>228</nNF></ide><emit><xNome>Fornecedor Alfa</xNome></emit><det><prod><cProd>PRD-001</cProd><cEAN>7891234567890</cEAN><xProd>Leitor industrial</xProd><qCom>4</qCom><vUnCom>10</vUnCom></prod></det></infNFe></NFe>'''
+        second_xml = b'''<NFe><infNFe Id="NFe10345678901234567890123456789012345678901234"><ide><nNF>229</nNF></ide><emit><xNome>Fornecedor Alfa</xNome></emit><det><prod><cProd>PRD-001</cProd><cEAN>7891234567890</cEAN><xProd>Leitor industrial</xProd><qCom>2</qCom><vUnCom>10</vUnCom></prod></det></infNFe></NFe>'''
+        imported = self.client.post("/api/invoices/import", data={"file": (BytesIO(xml), "nf-228.xml")}, headers={"X-CSRFToken": self.csrf}, content_type="multipart/form-data")
+        second_imported = self.client.post("/api/invoices/import", data={"file": (BytesIO(second_xml), "nf-229.xml")}, headers={"X-CSRFToken": self.csrf}, content_type="multipart/form-data")
+        invoice_id = imported.get_json()["id"]
+        second_invoice_id = second_imported.get_json()["id"]
+        created = self.post_json("/api/loads", {"reference": "LOAD-NF-228-229", "invoice_ids": [invoice_id, second_invoice_id]})
+        self.assertEqual(created.status_code, 201, created.get_json())
+        load_id = created.get_json()["id"]
+        self.assertEqual(created.get_json()["items"], 1)
+        self.assertEqual(created.get_json()["invoices"], ["228", "229"])
+        before = self.client.get(f"/api/loads/{load_id}").get_json()
+        self.assertEqual(before["invoices"][0]["number"], "228")
+        self.assertIsNone(before["items"][0]["checked"])
+        self.assertEqual(before["items"][0]["expected"], 6)
+        pending_close = self.post_json(f"/api/loads/{load_id}/close", {})
+        self.assertEqual(pending_close.status_code, 400)
+        scanned = self.post_json(f"/api/loads/{load_id}/scan", {"barcode": "7891234567890", "quantity": 3})
+        self.assertEqual(scanned.status_code, 201, scanned.get_json())
+        self.assertEqual(scanned.get_json()["expected"], 6)
+        detail = self.client.get(f"/api/loads/{load_id}").get_json()
+        self.assertEqual(detail["items"][0]["checked"], 3)
+        self.assertEqual(detail["items"][0]["expected"], 6)
+        self.assertEqual(self.post_json(f"/api/loads/{load_id}/close", {}).status_code, 200)
+
     def test_invoice_xml_import_is_idempotent_and_updates_stock(self):
         xml = b'''<NFe><infNFe Id="NFe12345678901234567890123456789012345678901234"><ide><nNF>220</nNF></ide><emit><xNome>Fornecedor XML</xNome></emit><det><prod><cProd>PRD-001</cProd><cEAN>7891234567890</cEAN><xProd>Leitor industrial</xProd><qCom>4.0000</qCom><vUnCom>10.25</vUnCom></prod></det></infNFe></NFe>'''
         response = self.client.post("/api/invoices/import", data={"file": (BytesIO(xml), "nf.xml")}, headers={"X-CSRFToken": self.csrf}, content_type="multipart/form-data")

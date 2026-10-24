@@ -170,6 +170,16 @@ class Load(db.Model):
     created_at = db.Column(db.DateTime, nullable=False, default=now_utc)
     created_by = db.relationship(User)
     items = db.relationship("ConferenceItem", cascade="all, delete-orphan", back_populates="load")
+    invoice_links = db.relationship("LoadInvoice", cascade="all, delete-orphan", back_populates="load")
+
+
+class LoadInvoice(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    load_id = db.Column(db.Integer, db.ForeignKey("load.id", ondelete="CASCADE"), nullable=False)
+    invoice_id = db.Column(db.Integer, db.ForeignKey("invoice.id"), nullable=False)
+    load = db.relationship(Load, back_populates="invoice_links")
+    invoice = db.relationship(Invoice)
+    __table_args__ = (db.UniqueConstraint("load_id", "invoice_id", name="uq_load_invoice"),)
 
 
 class ConferenceItem(db.Model):
@@ -714,7 +724,7 @@ def invoice_delete(invoice_id):
 @login_required
 def loads_list():
     loads = Load.query.order_by(Load.created_at.desc()).limit(300).all()
-    return jsonify([{"id": load.id, "reference": load.reference, "supplier": load.supplier, "status": load.status, "created_by": load.created_by.name, "created_at": load.created_at.isoformat(timespec="minutes"), "items": len(load.items), "checked": sum(1 for item in load.items if item.checked_quantity >= item.expected_quantity)} for load in loads])
+    return jsonify([{"id": load.id, "reference": load.reference, "supplier": load.supplier, "status": load.status, "created_by": load.created_by.name, "created_at": load.created_at.isoformat(timespec="minutes"), "items": len(load.items), "checked": sum(1 for item in load.items if item.checked_quantity > 0), "invoices": [link.invoice.number for link in load.invoice_links]} for load in loads])
 
 
 @app.post("/api/loads")
@@ -725,13 +735,33 @@ def load_create():
         reference = required_text(data, "reference", "a referência", 80)
         if Load.query.filter_by(reference=reference).first():
             raise ValueError("Já existe uma carga com esta referência.")
-        load = Load(reference=reference, supplier=required_text(data, "supplier", "o fornecedor"), created_by=current_user)
+        raw_invoice_ids = data.get("invoice_ids", [])
+        if not isinstance(raw_invoice_ids, list):
+            raise ValueError("Selecione notas fiscais válidas.")
+        invoice_ids = list(dict.fromkeys(int(invoice_id) for invoice_id in raw_invoice_ids))
+        invoices = Invoice.query.filter(Invoice.id.in_(invoice_ids), Invoice.status == "importada").all() if invoice_ids else []
+        if len(invoices) != len(invoice_ids):
+            raise ValueError("Uma ou mais notas selecionadas não estão disponíveis.")
+        suppliers = sorted({invoice.supplier_name for invoice in invoices})
+        supplier = " / ".join(suppliers) if suppliers else required_text(data, "supplier", "o fornecedor")
+        load = Load(reference=reference, supplier=supplier[:180], created_by=current_user)
         db.session.add(load)
         db.session.flush()
-        audit("criar", "carga", load.id, {"referencia": reference})
+        expected_by_product = {}
+        for invoice in invoices:
+            db.session.add(LoadInvoice(load=load, invoice=invoice))
+            for invoice_item in invoice.items:
+                product = invoice_item.product
+                if product and product.active:
+                    expected_by_product[product.id] = expected_by_product.get(product.id, 0) + invoice_item.quantity
+        for product_id, expected_quantity in expected_by_product.items():
+            db.session.add(ConferenceItem(load=load, product_id=product_id, expected_quantity=expected_quantity,
+                                          checked_quantity=0, checked_by=current_user))
+        audit("criar", "carga", load.id, {"referencia": reference, "notas": [invoice.number for invoice in invoices], "produtos_previstos": len(expected_by_product)})
         db.session.commit()
-        return jsonify({"id": load.id, "reference": load.reference, "status": load.status}), 201
-    except ValueError as error:
+        return jsonify({"id": load.id, "reference": load.reference, "status": load.status,
+                        "invoices": [invoice.number for invoice in invoices], "items": len(expected_by_product)}), 201
+    except (ValueError, TypeError) as error:
         db.session.rollback()
         return jsonify(error=str(error)), 400
 
@@ -740,7 +770,9 @@ def load_create():
 @login_required
 def load_detail(load_id):
     load = db.get_or_404(Load, load_id)
-    return jsonify({"id": load.id, "reference": load.reference, "supplier": load.supplier, "status": load.status, "items": [{"id": item.id, "product_id": item.product_id, "code": item.product.code, "barcode": item.product.barcode or "", "name": item.product.name, "unit": item.product.unit, "expected": item.expected_quantity, "checked": item.checked_quantity, "checked_by": item.checked_by.name} for item in load.items]})
+    return jsonify({"id": load.id, "reference": load.reference, "supplier": load.supplier, "status": load.status,
+                    "invoices": [{"id": link.invoice.id, "number": link.invoice.number, "supplier": link.invoice.supplier_name} for link in load.invoice_links],
+                    "items": [{"id": item.id, "product_id": item.product_id, "code": item.product.code, "barcode": item.product.barcode or "", "name": item.product.name, "unit": item.product.unit, "expected": item.expected_quantity, "checked": item.checked_quantity if item.checked_quantity > 0 else None, "checked_by": item.checked_by.name if item.checked_quantity > 0 else ""} for item in load.items]})
 
 
 @app.post("/api/loads/<int:load_id>/scan")
@@ -752,13 +784,20 @@ def load_scan(load_id):
     product = Product.query.filter_by(barcode=str(data.get("barcode", "")).strip(), active=True).first()
     if not product:
         return jsonify(error="Código de barras não cadastrado em um produto ativo."), 404
-    if ConferenceItem.query.filter_by(load_id=load.id, product_id=product.id).first():
+    existing_item = ConferenceItem.query.filter_by(load_id=load.id, product_id=product.id).first()
+    if existing_item and existing_item.checked_quantity > 0:
         return jsonify(error="Este produto já foi conferido nesta carga. A quantidade registrada não foi alterada."), 409
     try:
         quantity = positive_number(data.get("quantity"), "Quantidade conferida")
-        expected = positive_number(data.get("expected_quantity", quantity), "Quantidade esperada")
-        item = ConferenceItem(load=load, product=product, expected_quantity=expected, checked_quantity=quantity, checked_by=current_user)
-        db.session.add(item)
+        expected = existing_item.expected_quantity if existing_item else positive_number(data.get("expected_quantity", quantity), "Quantidade esperada")
+        if existing_item:
+            existing_item.checked_quantity = quantity
+            existing_item.checked_by = current_user
+            existing_item.checked_at = now_utc()
+            item = existing_item
+        else:
+            item = ConferenceItem(load=load, product=product, expected_quantity=expected, checked_quantity=quantity, checked_by=current_user)
+            db.session.add(item)
         db.session.flush()
         audit("conferir", "carga", load.id, {"referencia": load.reference, "codigo": product.code, "previsto": expected, "recebido": quantity})
         db.session.commit()
@@ -774,6 +813,9 @@ def load_close(load_id):
     load = db.get_or_404(Load, load_id)
     if load.status != "aberta":
         return jsonify(error="A carga já foi encerrada."), 400
+    pending = sum(1 for item in load.items if item.checked_quantity <= 0)
+    if pending:
+        return jsonify(error=f"Confira os {pending} produto(s) pendente(s) antes de encerrar a carga."), 400
     load.status = "conferida"
     audit("encerrar", "carga", load.id, {"referencia": load.reference})
     db.session.commit()

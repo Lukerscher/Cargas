@@ -133,10 +133,13 @@ function openForm(title, fields, onSubmit, description = "Preencha os dados para
     const submit = form.querySelector('[type="submit"]');
     submit.disabled = true;
     try {
-      const data = Object.fromEntries(new FormData(form));
+      const formData = new FormData(form);
+      const data = Object.fromEntries(formData);
       for (const field of fields) {
+        if (field.multiple) data[field.name] = formData.getAll(field.name);
         if (field.type === "number" && data[field.name] !== "") data[field.name] = Number(data[field.name]);
-        if (field.required && !String(data[field.name] ?? "").trim()) throw new Error(`Preencha ${field.label.toLowerCase()}.`);
+        const missing = Array.isArray(data[field.name]) ? data[field.name].length === 0 : !String(data[field.name] ?? "").trim();
+        if (field.required && missing) throw new Error(`Preencha ${field.label.toLowerCase()}.`);
       }
       await onSubmit(data);
       dialog.close();
@@ -154,7 +157,9 @@ function renderField(field) {
   const options = field.options || [];
   let input;
   if (field.type === "select") {
-    input = `<select class="select" name="${escapeHtml(field.name)}"${required}><option value="">${escapeHtml(field.placeholder || "Selecione")}</option>${options.map((option) => `<option value="${escapeHtml(option.value)}">${escapeHtml(option.label)}</option>`).join("")}</select>`;
+    const multiple = field.multiple ? " multiple size=\"5\"" : "";
+    const placeholder = field.multiple ? "" : `<option value="">${escapeHtml(field.placeholder || "Selecione")}</option>`;
+    input = `<select class="select" name="${escapeHtml(field.name)}"${multiple}${required}>${placeholder}${options.map((option) => `<option value="${escapeHtml(option.value)}">${escapeHtml(option.label)}</option>`).join("")}</select>`;
   } else if (field.type === "checkbox") {
     input = `<input type="checkbox" name="${escapeHtml(field.name)}" value="true" ${field.checked ? "checked" : ""}>`;
   } else if (field.type === "file") {
@@ -251,17 +256,31 @@ async function renderLoads() {
   if (!selectedLoad || !activeLoads.some((load) => load.id === selectedLoad)) selectedLoad = activeLoads[0]?.id || null;
   const chips = activeLoads.map((load) => `<button class="load-chip ${load.id === selectedLoad ? "active" : ""}" data-action="select-load" data-id="${load.id}"><strong>${escapeHtml(load.reference)}</strong><span>${escapeHtml(load.supplier)} · ${load.checked}/${load.items} produtos</span></button>`).join("");
   const selected = selectedLoad ? await api(`/api/loads/${selectedLoad}`) : null;
-  const detailRows = selected?.items.map((item) => `<tr><td><span class="table-primary">${escapeHtml(item.name)}</span><span class="table-secondary">${escapeHtml(item.code)} · ${escapeHtml(item.barcode || "sem código de barras")}</span></td><td>${formatNumber(item.expected)} ${escapeHtml(item.unit)}</td><td>${formatNumber(item.checked)} ${escapeHtml(item.unit)}</td><td>${item.checked >= item.expected ? statusPill("Conferido", "ok") : statusPill("Divergente", "warn")}</td><td>${escapeHtml(item.checked_by)}</td></tr>`) || [];
+  const detailRows = selected?.items.map((item) => {
+    const pending = item.checked === null;
+    const state = pending ? statusPill("Pendente", "neutral") : item.checked >= item.expected ? statusPill("Conferido", "ok") : statusPill("Divergente", "warn");
+    return `<tr><td><span class="table-primary">${escapeHtml(item.name)}</span><span class="table-secondary">${escapeHtml(item.code)} · ${escapeHtml(item.barcode || "sem código de barras")}</span></td><td>${formatNumber(item.expected)} ${escapeHtml(item.unit)}</td><td>${pending ? "Pendente" : `${formatNumber(item.checked)} ${escapeHtml(item.unit)}`}</td><td>${state}</td><td>${escapeHtml(item.checked_by || "-")}</td></tr>`;
+  }) || [];
   const createButton = `<button class="button button-primary" data-action="new-load">+ Abrir carga</button>`;
   let body = `<div class="load-list">${chips || `<div class="empty-state">Nenhuma carga aberta para conferência.</div>`}</div>`;
   if (selected) {
     body += `<form class="scan-area" id="scan-form" data-load-id="${selected.id}"><div class="field"><label for="scan-barcode">Código de barras</label><input class="input scan-input" id="scan-barcode" name="barcode" autocomplete="off" placeholder="Leia ou digite o código" required></div><div class="field"><label for="scan-expected">Quantidade prevista</label><input class="input scan-input" id="scan-expected" name="expected_quantity" type="number" min="0.001" step="0.001" placeholder="NF ou romaneio"></div><div class="field"><label for="scan-quantity">Quantidade recebida</label><input class="input scan-input" id="scan-quantity" name="quantity" type="number" min="0.001" step="0.001" placeholder="Total recebido" required></div><button class="button button-primary" type="submit">Registrar produto</button><p class="scan-help">Leia o código uma vez por produto, informe o total recebido e compare com a quantidade prevista. Códigos repetidos são bloqueados.</p></form>`;
     body += table(["Produto", "Esperado", "Conferido", "Situação", "Responsável"], detailRows, selected.items.length);
-    body += `<div class="panel-head"><span class="table-count">Carga ${escapeHtml(selected.reference)} · Fornecedor: ${escapeHtml(selected.supplier)}</span>${canStock ? `<button class="button button-small" data-action="close-load" data-id="${selected.id}">Encerrar conferência</button>` : ""}</div>`;
+    const invoiceLabel = selected.invoices.length ? ` · NF: ${selected.invoices.map((invoice) => `#${escapeHtml(invoice.number)}`).join(", ")}` : "";
+    body += `<div class="panel-head"><span class="table-count">Carga ${escapeHtml(selected.reference)} · Fornecedor: ${escapeHtml(selected.supplier)}${invoiceLabel}</span>${canStock ? `<button class="button button-small" data-action="close-load" data-id="${selected.id}">Encerrar conferência</button>` : ""}</div>`;
   }
   content.innerHTML = `${intro("Conferência de cargas", "Leia o código de barras uma vez por produto e registre a quantidade total.", createButton)}${panel("Cargas em conferência", body, { subtitle: `${activeLoads.length} carga${activeLoads.length === 1 ? " aberta" : "s abertas"}` })}`;
   content.dataset.loadProducts = JSON.stringify(products);
-  if (selected) content.querySelector("#scan-barcode")?.focus();
+  if (selected) {
+    const barcodeInput = content.querySelector("#scan-barcode");
+    const expectedInput = content.querySelector("#scan-expected");
+    barcodeInput?.addEventListener("input", () => {
+      const matched = selected.items.find((item) => item.barcode && item.barcode === barcodeInput.value.trim() && item.checked === null);
+      expectedInput.value = matched ? matched.expected : "";
+      expectedInput.readOnly = Boolean(matched);
+    });
+    barcodeInput?.focus();
+  }
 }
 
 async function renderLoadList() {
@@ -406,15 +425,24 @@ document.addEventListener("click", async (event) => {
       toast(result.message);
       await renderInvoices();
     }
-    if (action === "new-load") openForm("Abrir carga", [
-      { name: "reference", label: "Referência da carga", required: true, placeholder: "Ex.: CARGA-2026-001" },
-      { name: "supplier", label: "Fornecedor", required: true, placeholder: "Transportadora ou fornecedor" },
-    ], async (data) => {
-      const load = await api("/api/loads", { method: "POST", body: JSON.stringify(data) });
-      selectedLoad = load.id;
-      toast("Carga aberta para conferência.");
-      setPage("cargas");
-    });
+    if (action === "new-load") {
+      const invoices = await api("/api/invoices");
+      const invoiceOptions = invoices.map((invoice) => ({
+        value: invoice.id,
+        label: `NF ${invoice.number} · ${invoice.supplier} · ${invoice.items} itens`,
+      }));
+      openForm("Abrir carga", [
+        { name: "reference", label: "Referência da carga", required: true, placeholder: "Ex.: CARGA-2026-001" },
+        { name: "invoice_ids", label: "Notas fiscais desta carga", type: "select", multiple: true, options: invoiceOptions, full: true },
+        { name: "supplier", label: "Fornecedor (se não selecionar NF)", placeholder: "Transportadora ou fornecedor", full: true },
+      ], async (data) => {
+        if (!data.invoice_ids.length && !data.supplier.trim()) throw new Error("Selecione uma nota fiscal ou informe o fornecedor.");
+        const load = await api("/api/loads", { method: "POST", body: JSON.stringify(data) });
+        selectedLoad = load.id;
+        toast(`Carga aberta com ${load.invoices.length} NF(s) e ${load.items} produto(s) esperado(s).`);
+        setPage("cargas");
+      }, "Selecione uma ou mais notas recebidas. Os produtos e quantidades previstos serão carregados para conferência.");
+    }
     if (action === "select-load") {
       selectedLoad = Number(id);
       await renderLoads();
