@@ -10,7 +10,6 @@ const pages = {
   estoque: ["Estoque", "OPERAÇÃO"],
   notas: ["Notas fiscais", "ENTRADAS"],
   cargas: ["Expedição", "LOGÍSTICA"],
-  "cargas-lista": ["Cargas", "OPERAÇÃO"],
   inventario: ["Inventário", "CONTAGEM"],
   relatorios: ["Relatórios", "ANÁLISE"],
   usuarios: ["Usuários", "ADMINISTRAÇÃO"],
@@ -85,7 +84,6 @@ function setPage(page) {
     estoque: renderStock,
     notas: renderInvoices,
     cargas: renderLoads,
-    "cargas-lista": renderLoadList,
     inventario: renderInventory,
     relatorios: renderReports,
     usuarios: renderUsers,
@@ -157,7 +155,7 @@ function openForm(title, fields, onSubmit, description = "Preencha os dados para
       const formData = new FormData(form);
       const data = Object.fromEntries(formData);
       for (const field of fields) {
-        if (field.multiple) data[field.name] = formData.getAll(field.name);
+        if (field.multiple || field.type === "multiselect") data[field.name] = formData.getAll(field.name);
         if (field.type === "number" && data[field.name] !== "") data[field.name] = Number(data[field.name]);
         const missing = Array.isArray(data[field.name]) ? data[field.name].length === 0 : !String(data[field.name] ?? "").trim();
         if (field.required && missing) throw new Error(`Preencha ${field.label.toLowerCase()}.`);
@@ -316,12 +314,6 @@ async function renderLoads() {
     expectedInput.readOnly = Boolean(matched);
   });
   barcodeInput?.focus();
-}
-
-async function renderLoadList() {
-  const loads = await api("/api/loads");
-  const rows = loads.map((load) => `<tr><td><span class="table-primary">${escapeHtml(load.reference)}</span>${load.observations ? `<span class="table-secondary">${escapeHtml(load.observations)}</span>` : ""}</td><td>${escapeHtml(load.supplier)}</td><td>${escapeHtml(load.vehicle_plate || "-")}</td><td>${escapeHtml(load.driver_name || "-")}</td><td>${load.checked}/${load.items} produtos</td><td>${statusPill(load.status === "aberta" ? "Em conferência" : "Conferida", load.status === "aberta" ? "warn" : "ok")}</td><td>${escapeHtml(load.created_by)}</td><td>${formatDate(load.created_at)}</td><td>${load.status === "aberta" ? `<button class="button button-small" data-action="open-load" data-id="${load.id}">Conferir</button>` : ""}</td></tr>`);
-  content.innerHTML = `${intro("Cargas", "Acompanhe referências, notas, transporte e andamento da conferência.", `<button class="button button-primary" data-action="new-load">+ Nova carga</button>`)}${panel("Todas as cargas", table(["Referência", "Fornecedor", "Placa", "Motorista", "Itens conferidos", "Situação", "Criada por", "Abertura", "Ação"], rows, loads.length))}`;
 }
 
 async function renderInventory() {
