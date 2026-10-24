@@ -134,9 +134,8 @@ class AlmoxControlTests(unittest.TestCase):
             actions = [entry.action for entry in application.AuditLog.query.filter_by(entity="carga").all()]
         self.assertIn("editar_conferencia", actions)
         self.assertIn("desfazer_conferencia", actions)
-        self.assertEqual(self.post_json(f"/api/loads/{load_id}/scan", {"barcode": "7891234567890", "expected_quantity": 8, "quantity": 7}).status_code, 201)
-        zero = self.client.put(f"/api/loads/{load_id}/items/{item_id}", json={"quantity": 0}, headers={"X-CSRFToken": self.csrf})
-        self.assertEqual(zero.status_code, 200)
+        zero = self.post_json(f"/api/loads/{load_id}/scan", {"barcode": "7891234567890", "expected_quantity": 8, "quantity": 0})
+        self.assertEqual(zero.status_code, 201)
         zero_detail = self.client.get(f"/api/loads/{load_id}").get_json()
         self.assertEqual(zero_detail["items"][0]["checked"], 0)
         close = self.post_json(f"/api/loads/{load_id}/close", {})

@@ -800,7 +800,7 @@ def load_scan(load_id):
     if existing_item and existing_item.is_checked:
         return jsonify(error="Este produto já foi conferido nesta carga. A quantidade registrada não foi alterada."), 409
     try:
-        quantity = positive_number(data.get("quantity"), "Quantidade conferida")
+        quantity = positive_number(data.get("quantity"), "Quantidade conferida", allow_zero=True)
         expected = existing_item.expected_quantity if existing_item else positive_number(data.get("expected_quantity", quantity), "Quantidade esperada")
         if existing_item:
             existing_item.checked_quantity = quantity
