@@ -191,6 +191,7 @@ class ConferenceItem(db.Model):
     product_id = db.Column(db.Integer, db.ForeignKey("product.id"), nullable=False)
     expected_quantity = db.Column(db.Float, nullable=False, default=0)
     checked_quantity = db.Column(db.Float, nullable=False)
+    is_checked = db.Column(db.Boolean, nullable=False, default=False)
     checked_by_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
     checked_at = db.Column(db.DateTime, nullable=False, default=now_utc)
     load = db.relationship(Load, back_populates="items")
@@ -727,7 +728,7 @@ def invoice_delete(invoice_id):
 @login_required
 def loads_list():
     loads = Load.query.order_by(Load.created_at.desc()).limit(300).all()
-    return jsonify([{"id": load.id, "reference": load.reference, "supplier": load.supplier, "vehicle_plate": load.vehicle_plate or "", "driver_name": load.driver_name or "", "observations": load.observations or "", "status": load.status, "created_by": load.created_by.name, "created_at": load.created_at.isoformat(timespec="minutes"), "items": len(load.items), "checked": sum(1 for item in load.items if item.checked_quantity > 0), "invoices": [link.invoice.number for link in load.invoice_links]} for load in loads])
+    return jsonify([{"id": load.id, "reference": load.reference, "supplier": load.supplier, "vehicle_plate": load.vehicle_plate or "", "driver_name": load.driver_name or "", "observations": load.observations or "", "status": load.status, "created_by": load.created_by.name, "created_at": load.created_at.isoformat(timespec="minutes"), "items": len(load.items), "checked": sum(1 for item in load.items if item.is_checked), "invoices": [link.invoice.number for link in load.invoice_links]} for load in loads])
 
 
 @app.post("/api/loads")
@@ -765,7 +766,7 @@ def load_create():
                     expected_by_product[product.id] = expected_by_product.get(product.id, 0) + invoice_item.quantity
         for product_id, expected_quantity in expected_by_product.items():
             db.session.add(ConferenceItem(load=load, product_id=product_id, expected_quantity=expected_quantity,
-                                          checked_quantity=0, checked_by=current_user))
+                                          checked_quantity=0, is_checked=False, checked_by=current_user))
         audit("criar", "carga", load.id, {"referencia": reference, "notas": [invoice.number for invoice in invoices], "placa": plate, "motorista": driver, "produtos_previstos": len(expected_by_product)})
         db.session.commit()
         return jsonify({"id": load.id, "reference": load.reference, "status": load.status,
@@ -783,7 +784,7 @@ def load_detail(load_id):
     return jsonify({"id": load.id, "reference": load.reference, "supplier": load.supplier,
                     "vehicle_plate": load.vehicle_plate or "", "driver_name": load.driver_name or "", "observations": load.observations or "", "status": load.status,
                     "invoices": [{"id": link.invoice.id, "number": link.invoice.number, "supplier": link.invoice.supplier_name} for link in load.invoice_links],
-                    "items": [{"id": item.id, "product_id": item.product_id, "code": item.product.code, "barcode": item.product.barcode or "", "name": item.product.name, "unit": item.product.unit, "expected": item.expected_quantity, "checked": item.checked_quantity if item.checked_quantity > 0 else None, "checked_by": item.checked_by.name if item.checked_quantity > 0 else ""} for item in load.items]})
+                    "items": [{"id": item.id, "product_id": item.product_id, "code": item.product.code, "barcode": item.product.barcode or "", "name": item.product.name, "unit": item.product.unit, "expected": item.expected_quantity, "checked": item.checked_quantity if item.is_checked else None, "checked_by": item.checked_by.name if item.is_checked else ""} for item in load.items]})
 
 
 @app.post("/api/loads/<int:load_id>/scan")
@@ -796,18 +797,19 @@ def load_scan(load_id):
     if not product:
         return jsonify(error="Código de barras não cadastrado em um produto ativo."), 404
     existing_item = ConferenceItem.query.filter_by(load_id=load.id, product_id=product.id).first()
-    if existing_item and existing_item.checked_quantity > 0:
+    if existing_item and existing_item.is_checked:
         return jsonify(error="Este produto já foi conferido nesta carga. A quantidade registrada não foi alterada."), 409
     try:
         quantity = positive_number(data.get("quantity"), "Quantidade conferida")
         expected = existing_item.expected_quantity if existing_item else positive_number(data.get("expected_quantity", quantity), "Quantidade esperada")
         if existing_item:
             existing_item.checked_quantity = quantity
+            existing_item.is_checked = True
             existing_item.checked_by = current_user
             existing_item.checked_at = now_utc()
             item = existing_item
         else:
-            item = ConferenceItem(load=load, product=product, expected_quantity=expected, checked_quantity=quantity, checked_by=current_user)
+            item = ConferenceItem(load=load, product=product, expected_quantity=expected, checked_quantity=quantity, is_checked=True, checked_by=current_user)
             db.session.add(item)
         db.session.flush()
         audit("conferir", "carga", load.id, {"referencia": load.reference, "codigo": product.code, "previsto": expected, "recebido": quantity})
@@ -818,19 +820,65 @@ def load_scan(load_id):
         return jsonify(error=str(error)), 400
 
 
+@app.put("/api/loads/<int:load_id>/items/<int:item_id>")
+@roles_required("administrador", "almoxarife", "conferente")
+def load_item_update(load_id, item_id):
+    load, item = db.get_or_404(Load, load_id), db.get_or_404(ConferenceItem, item_id)
+    if item.load_id != load.id or load.status != "aberta" or not item.is_checked:
+        return jsonify(error="Este item não pode ser editado nesta carga."), 400
+    try:
+        previous = item.checked_quantity
+        quantity = positive_number(payload().get("quantity"), "Quantidade conferida", allow_zero=True)
+        item.checked_quantity = quantity
+        item.checked_by = current_user
+        item.checked_at = now_utc()
+        audit("editar_conferencia", "carga", load.id, {"referencia": load.reference, "produto": item.product.code, "quantidade_anterior": previous, "quantidade_nova": quantity})
+        db.session.commit()
+        return jsonify({"id": item.id, "checked": quantity, "expected": item.expected_quantity})
+    except ValueError as error:
+        db.session.rollback()
+        return jsonify(error=str(error)), 400
+
+
+@app.post("/api/loads/<int:load_id>/undo-last")
+@roles_required("administrador", "almoxarife", "conferente")
+def load_undo_last(load_id):
+    load = db.get_or_404(Load, load_id)
+    if load.status != "aberta":
+        return jsonify(error="Esta expedição já foi encerrada."), 400
+    item = ConferenceItem.query.filter_by(load_id=load.id, is_checked=True).order_by(ConferenceItem.checked_at.desc(), ConferenceItem.id.desc()).first()
+    if not item:
+        return jsonify(error="Ainda não há produto conferido para desfazer."), 404
+    previous = item.checked_quantity
+    item.checked_quantity = 0
+    item.is_checked = False
+    item.checked_by = current_user
+    item.checked_at = now_utc()
+    audit("desfazer_conferencia", "carga", load.id, {"referencia": load.reference, "produto": item.product.code, "quantidade_desfeita": previous})
+    db.session.commit()
+    return jsonify({"ok": True, "product": item.product.name, "quantity": previous})
+
+
 @app.post("/api/loads/<int:load_id>/close")
 @roles_required("administrador", "almoxarife")
 def load_close(load_id):
     load = db.get_or_404(Load, load_id)
     if load.status != "aberta":
         return jsonify(error="A carga já foi encerrada."), 400
-    pending = sum(1 for item in load.items if item.checked_quantity <= 0)
+    pending = sum(1 for item in load.items if not item.is_checked)
     if pending:
-        return jsonify(error=f"Confira os {pending} produto(s) pendente(s) antes de encerrar a carga."), 400
+        return jsonify(error=f"Confira os {pending} produto(s) pendente(s) antes de encerrar a carga.", requires_confirmation=False), 400
+    checked = len(load.items)
+    expected_total = sum(item.expected_quantity for item in load.items)
+    checked_total = sum(item.checked_quantity for item in load.items)
+    discrepancies = sum(1 for item in load.items if item.checked_quantity != item.expected_quantity)
+    summary = {"products": checked, "expected": expected_total, "checked": checked_total, "discrepancies": discrepancies}
+    if discrepancies and not payload().get("confirm_divergences"):
+        return jsonify(error="A expedição tem divergências. Confira o resumo e confirme o encerramento.", requires_confirmation=True, summary=summary), 409
     load.status = "conferida"
-    audit("encerrar", "carga", load.id, {"referencia": load.reference})
+    audit("encerrar", "carga", load.id, {"referencia": load.reference, **summary})
     db.session.commit()
-    return jsonify(ok=True)
+    return jsonify(ok=True, summary=summary)
 
 
 @app.get("/api/inventories")
@@ -1113,6 +1161,7 @@ with app.app_context():
     invoice_columns = {column["name"] for column in inspector.get_columns("invoice")}
     product_columns = {column["name"] for column in inspector.get_columns("product")}
     load_columns = {column["name"] for column in inspector.get_columns("load")}
+    conference_columns = {column["name"] for column in inspector.get_columns("conference_item")}
     with db.engine.begin() as connection:
         if "invoice_id" not in movement_columns:
             connection.exec_driver_sql("ALTER TABLE movement ADD COLUMN invoice_id INTEGER REFERENCES invoice(id)")
@@ -1132,6 +1181,9 @@ with app.app_context():
             connection.exec_driver_sql("ALTER TABLE load ADD COLUMN driver_name VARCHAR(120)")
         if "observations" not in load_columns:
             connection.exec_driver_sql("ALTER TABLE load ADD COLUMN observations TEXT")
+        if "is_checked" not in conference_columns:
+            connection.exec_driver_sql("ALTER TABLE conference_item ADD COLUMN is_checked BOOLEAN NOT NULL DEFAULT 0")
+            connection.exec_driver_sql("UPDATE conference_item SET is_checked = 1 WHERE checked_quantity > 0")
 
     for invoice in Invoice.query.filter_by(status="importada").all():
         legacy_items = InvoiceItem.query.filter_by(invoice_id=invoice.id).filter(InvoiceItem.product_id.isnot(None)).all()

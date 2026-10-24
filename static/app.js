@@ -390,18 +390,22 @@ async function renderLoads() {
   const checkedItems = selected.items.filter((item) => item.checked !== null).length;
   const pendingItems = selected.items.length - checkedItems;
   const discrepancies = selected.items.filter((item) => item.checked !== null && item.checked < item.expected).length;
-  const detailRows = selected?.items.map((item) => {
+  const expectedTotal = selected.items.reduce((total, item) => total + item.expected, 0);
+  const checkedTotal = selected.items.reduce((total, item) => total + (item.checked ?? 0), 0);
+  const progress = selected.items.length ? Math.round(checkedItems / selected.items.length * 100) : 0;
+  const detailRows = selected.items.map((item) => {
     const pending = item.checked === null;
     const state = pending ? statusPill("Pendente", "neutral") : item.checked >= item.expected ? statusPill("Conferido", "ok") : statusPill("Divergente", "warn");
-    return `<tr><td><span class="table-primary">${escapeHtml(item.name)}</span><span class="table-secondary">${escapeHtml(item.code)} · ${escapeHtml(item.barcode || "sem código de barras")}</span></td><td>${formatNumber(item.expected)} ${escapeHtml(item.unit)}</td><td>${pending ? "Pendente" : `${formatNumber(item.checked)} ${escapeHtml(item.unit)}`}</td><td>${state}</td><td>${escapeHtml(item.checked_by || "-")}</td></tr>`;
-  }) || [];
+    const edit = selected.status === "aberta" && !pending ? `<button class="button button-small" data-action="edit-conference-item" data-id="${item.id}" data-quantity="${item.checked}">Editar</button>` : "";
+    return `<tr><td><span class="table-primary">${escapeHtml(item.name)}</span><span class="table-secondary">${escapeHtml(item.code)} · ${escapeHtml(item.barcode || "sem código de barras")}</span></td><td>${formatNumber(item.expected)} ${escapeHtml(item.unit)}</td><td>${pending ? "Pendente" : `${formatNumber(item.checked)} ${escapeHtml(item.unit)}`}</td><td>${state}</td><td>${escapeHtml(item.checked_by || "-")}</td><td>${edit}</td></tr>`;
+  });
   const invoiceTags = selected.invoices.map((invoice) => `<span class="dispatch-tag">NF ${escapeHtml(invoice.number)}</span>`).join("");
   const observations = selected.observations ? `<div class="dispatch-observations"><span>Observações</span><p>${escapeHtml(selected.observations)}</p></div>` : "";
   const metadata = `<div class="dispatch-details"><div><span>Fornecedor</span><strong>${escapeHtml(selected.supplier)}</strong></div><div><span>Veículo</span><strong>${escapeHtml(selected.vehicle_plate || "Não informada")}</strong></div><div><span>Motorista</span><strong>${escapeHtml(selected.driver_name || "Não informado")}</strong></div><div class="dispatch-invoices"><span>Notas fiscais</span><div>${invoiceTags || "<span class=\"table-count\">Sem NF vinculada</span>"}</div></div>${observations}</div>`;
-  const overview = `<div class="dispatch-overview"><div><strong>${checkedItems}/${selected.items.length}</strong><span>Produtos conferidos</span></div><div><strong>${pendingItems}</strong><span>Pendentes</span></div><div><strong>${discrepancies}</strong><span>Divergências</span></div></div>`;
-  const scanForm = `<form class="scan-area" id="scan-form" data-load-id="${selected.id}"><div class="field"><label for="scan-barcode">Código de barras</label><input class="input scan-input" id="scan-barcode" name="barcode" autocomplete="off" placeholder="Leia ou digite o código" required></div><button class="button scan-camera-button" id="scan-camera" type="button"><span aria-hidden="true">▣</span> Câmera</button><div class="field"><label for="scan-expected">Quantidade prevista</label><input class="input scan-input" id="scan-expected" name="expected_quantity" type="number" min="0.001" step="0.001" placeholder="Preenchida pela NF"></div><div class="field"><label for="scan-quantity">Quantidade recebida</label><input class="input scan-input" id="scan-quantity" name="quantity" type="number" min="0.001" step="0.001" placeholder="Total recebido" required></div><button class="button button-primary" type="submit">Registrar produto</button><div class="scan-product-confirm" id="scan-product-confirm" hidden><div><strong id="scan-product-name"></strong><span id="scan-product-detail"></span></div><button class="button button-primary" id="confirm-scan-product" type="button">Confirmar produto</button></div><p class="scan-help">Leia uma vez por produto, confira o nome identificado e informe o total recebido.</p></form>`;
+  const overview = `<div class="dispatch-overview"><div><strong>${checkedItems}/${selected.items.length}</strong><span>Produtos conferidos</span></div><div><strong>${formatNumber(checkedTotal)} / ${formatNumber(expectedTotal)}</strong><span>Quantidade conferida / prevista</span></div><div><strong>${pendingItems}</strong><span>Pendentes</span></div><div><strong>${discrepancies}</strong><span>Divergências</span></div></div><div class="dispatch-progress"><div><span>Progresso</span><strong>${progress}%</strong></div><div class="progress-track"><span style="width:${progress}%"></span></div></div>`;
+  const scanForm = `<form class="scan-area" id="scan-form" data-load-id="${selected.id}"><div class="field"><label for="scan-barcode">Código de barras</label><input class="input scan-input" id="scan-barcode" name="barcode" autocomplete="off" placeholder="Leia ou digite o código" required></div><button class="button scan-camera-button" id="scan-camera" type="button"><span aria-hidden="true">▣</span> Câmera</button><div class="field"><label for="scan-expected">Quantidade prevista</label><input class="input scan-input" id="scan-expected" name="expected_quantity" type="number" min="0.001" step="0.001" placeholder="Preenchida pela NF"></div><div class="field"><label for="scan-quantity">Quantidade total conferida</label><input class="input scan-input" id="scan-quantity" name="quantity" type="number" min="0.001" step="0.001" placeholder="Total recebido" required></div><div class="scan-actions"><button class="button scan-undo-button" id="undo-last-scan" type="button" data-action="undo-last-scan" data-id="${selected.id}" ${checkedItems ? "" : "disabled"}>↶ Desfazer último</button><button class="button button-primary" type="submit">Confirmar quantidade</button></div><div class="scan-product-confirm" id="scan-product-confirm" hidden><div><strong id="scan-product-name"></strong><span id="scan-product-detail"></span></div><button class="button button-primary" id="confirm-scan-product" type="button">Confirmar produto</button></div><p class="scan-help">Leia uma vez por produto. Pressione Enter após digitar a quantidade para registrar.</p></form>`;
   const closeButton = canStock ? `<button class="button button-small" data-action="close-load" data-id="${selected.id}">Encerrar expedição</button>` : "";
-  content.innerHTML = `${introHtml}<div class="dispatch-layout"><aside class="dispatch-sidebar">${loadPanel}</aside><section class="dispatch-main">${panel(`Expedição ${selected.reference}`, metadata + overview, { subtitle: `Aberta por ${selected.created_by} · ${formatDate(selected.created_at)}`, action: closeButton })}${panel("Conferir produtos", scanForm, { subtitle: "Leitura de código de barras e conferência de quantidade" })}${panel("Itens da expedição", table(["Produto", "Esperado", "Conferido", "Situação", "Responsável"], detailRows, selected.items.length))}</section></div>`;
+  content.innerHTML = `${introHtml}<div class="dispatch-layout"><aside class="dispatch-sidebar">${loadPanel}</aside><section class="dispatch-main">${panel(`Expedição ${selected.reference}`, metadata + overview, { subtitle: `Aberta por ${selected.created_by} · ${formatDate(selected.created_at)}`, action: closeButton })}${panel("Conferir produtos", scanForm, { subtitle: "Leitura de código de barras e conferência de quantidade" })}${panel("Itens da expedição", table(["Produto", "Esperado", "Conferido", "Situação", "Responsável", "Ação"], detailRows, selected.items.length))}</section></div>`;
   content.dataset.loadProducts = JSON.stringify(products);
   const barcodeInput = content.querySelector("#scan-barcode");
   const expectedInput = content.querySelector("#scan-expected");
@@ -412,6 +416,23 @@ async function renderLoads() {
   const confirmProductButton = content.querySelector("#confirm-scan-product");
   const scanFormElement = content.querySelector("#scan-form");
   content.querySelector("#scan-camera")?.addEventListener("click", startCameraScanner);
+  const confirmProduct = () => {
+    const barcode = barcodeInput.value.trim();
+    const product = products.find((item) => item.barcode && item.barcode === barcode);
+    const expectedItem = selected.items.find((item) => item.barcode && item.barcode === barcode);
+    if (!product) {
+      toast("Código de barras não cadastrado.", "error");
+      return;
+    }
+    if (expectedItem?.checked !== null && expectedItem?.checked !== undefined) {
+      toast("Este produto já foi conferido. Use Editar ou Desfazer para corrigir.", "error");
+      return;
+    }
+    scanFormElement.dataset.confirmedBarcode = barcode;
+    confirmProductButton.textContent = "Produto confirmado";
+    confirmProductButton.disabled = true;
+    quantityInput.focus();
+  };
   barcodeInput?.addEventListener("input", () => {
     const barcode = barcodeInput.value.trim();
     const product = products.find((item) => item.barcode && item.barcode === barcode);
@@ -435,12 +456,13 @@ async function renderLoads() {
       : `Código ${product.code} · produto fora das NF selecionadas`;
     confirmProductButton.disabled = Boolean(alreadyChecked);
   });
-  confirmProductButton?.addEventListener("click", () => {
-    scanFormElement.dataset.confirmedBarcode = barcodeInput.value.trim();
-    confirmProductButton.textContent = "Produto confirmado";
-    confirmProductButton.disabled = true;
-    quantityInput.focus();
+  barcodeInput?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      confirmProduct();
+    }
   });
+  confirmProductButton?.addEventListener("click", confirmProduct);
   barcodeInput?.focus();
 }
 
@@ -609,10 +631,38 @@ document.addEventListener("click", async (event) => {
       selectedLoad = Number(id);
       setPage("cargas");
     }
-    if (action === "close-load" && window.confirm("Encerrar a conferência desta carga?")) {
-      await api(`/api/loads/${id}/close`, { method: "POST", body: "{}" });
+    if (action === "edit-conference-item") {
+      const load = await api(`/api/loads/${selectedLoad}`);
+      const item = load.items.find((candidate) => candidate.id === Number(id));
+      if (!item) throw new Error("Produto não encontrado nesta expedição.");
+      openForm("Corrigir quantidade conferida", [{ name: "quantity", label: `${item.name} · esperado ${formatNumber(item.expected)} ${item.unit}`, type: "number", min: 0, step: "0.001", required: true }], async (data) => {
+        await api(`/api/loads/${load.id}/items/${item.id}`, { method: "PUT", body: JSON.stringify({ quantity: Number(data.quantity) }) });
+        toast("Quantidade corrigida e registrada na auditoria.");
+        await renderLoads();
+      }, "A correção não movimenta o estoque e mantém o valor anterior no histórico.");
+      dialogContent.querySelector('[name="quantity"]').value = button.dataset.quantity;
+    }
+    if (action === "undo-last-scan") {
+      const result = await api(`/api/loads/${id}/undo-last`, { method: "POST", body: "{}" });
+      toast(`Última conferência desfeita: ${result.product}, ${formatNumber(result.quantity)} un.`);
+      await renderLoads();
+    }
+    if (action === "close-load") {
+      const load = await api(`/api/loads/${id}`);
+      const pending = load.items.filter((item) => item.checked === null);
+      if (pending.length) {
+        toast(`Ainda há ${pending.length} produto(s) pendente(s).`, "error");
+        return;
+      }
+      const divergentItems = load.items.filter((item) => item.checked !== item.expected);
+      const expectedTotal = load.items.reduce((total, item) => total + item.expected, 0);
+      const checkedTotal = load.items.reduce((total, item) => total + (item.checked ?? 0), 0);
+      const details = divergentItems.slice(0, 8).map((item) => `${item.name}: esperado ${formatNumber(item.expected)}, conferido ${formatNumber(item.checked)}`).join("\n");
+      const summary = `Expedição ${load.reference}\nProdutos: ${load.items.length}\nQuantidade prevista: ${formatNumber(expectedTotal)}\nQuantidade conferida: ${formatNumber(checkedTotal)}\nDivergências: ${divergentItems.length}${details ? `\n\n${details}` : ""}\n\nConfirmar encerramento?`;
+      if (!window.confirm(summary)) return;
+      await api(`/api/loads/${id}/close`, { method: "POST", body: JSON.stringify({ confirm_divergences: divergentItems.length > 0 }) });
       selectedLoad = null;
-      toast("Carga encerrada.");
+      toast("Expedição encerrada. Nenhuma movimentação de estoque foi criada.");
       await renderLoads();
     }
     if (action === "new-inventory") openForm("Abrir inventário", [{ name: "reference", label: "Referência", required: true, full: true, placeholder: "Ex.: INV-2026-001" }], async (data) => {
@@ -709,12 +759,14 @@ document.addEventListener("submit", async (event) => {
   if (event.target.matches("#scan-form")) {
     event.preventDefault();
     const form = event.target;
+    if (form.dataset.submitting === "true") return;
     const data = Object.fromEntries(new FormData(form));
     if (form.dataset.confirmedBarcode !== String(data.barcode || "").trim()) {
       toast("Leia o código e confirme o nome do produto antes de registrar.", "error");
       form.querySelector("#scan-barcode")?.focus();
       return;
     }
+    form.dataset.submitting = "true";
     const submit = form.querySelector('[type="submit"]');
     submit.disabled = true;
     try {
@@ -723,6 +775,7 @@ document.addEventListener("submit", async (event) => {
       await renderLoads();
     } catch (error) {
       toast(error.message, "error");
+      form.dataset.submitting = "false";
       submit.disabled = false;
       form.querySelector("#scan-barcode")?.focus();
       form.querySelector("#scan-barcode")?.select();

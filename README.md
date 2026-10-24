@@ -31,7 +31,7 @@ O primeiro administrador é criado pelo comando `flask --app app create-admin`, 
 - Importação de até 20 XML de NF-e por lote, com resultado individual por arquivo, bloqueio por chave duplicada e entrada automática dos itens associados ao catálogo.
 - Exclusão auditada de NF-e com estorno das entradas vinculadas. A exclusão é bloqueada se o saldo tiver sido consumido ou se a origem dos movimentos não puder ser confirmada.
 - Conferência de cargas com leitura única por produto e registro da quantidade total, sem somar leituras repetidas.
-- Cargas podem ser vinculadas a várias NF-e; os produtos e quantidades previstos são somados automaticamente para orientar a leitura e impedir o encerramento com itens pendentes. Placa, motorista e observações ficam registrados na carga.
+- Cargas podem ser vinculadas a várias NF-e; os produtos e quantidades previstos são somados automaticamente para orientar a leitura. O progresso e as divergências ficam visíveis; quantidades podem ser corrigidas ou desfeitas com auditoria, e divergências exigem confirmação antes do encerramento. A conferência não movimenta o estoque. Placa, motorista e observações ficam registrados na carga.
 - Inventário físico que compara saldos e aplica ajustes ao ser concluído.
 - Relatórios filtráveis por período, produto, categoria, fornecedor e responsável, exportados em CSV e Excel.
 - Backup íntegro do SQLite por download e restauração com verificação de integridade.

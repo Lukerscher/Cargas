@@ -98,6 +98,7 @@ class AlmoxControlTests(unittest.TestCase):
         self.assertEqual(before["observations"], "Entregar pela doca 2")
         self.assertIsNone(before["items"][0]["checked"])
         self.assertEqual(before["items"][0]["expected"], 6)
+        stock_before = self.client.get("/api/products").get_json()[0]["stock"]
         pending_close = self.post_json(f"/api/loads/{load_id}/close", {})
         self.assertEqual(pending_close.status_code, 400)
         scanned = self.post_json(f"/api/loads/{load_id}/scan", {"barcode": "7891234567890", "quantity": 3})
@@ -106,7 +107,41 @@ class AlmoxControlTests(unittest.TestCase):
         detail = self.client.get(f"/api/loads/{load_id}").get_json()
         self.assertEqual(detail["items"][0]["checked"], 3)
         self.assertEqual(detail["items"][0]["expected"], 6)
-        self.assertEqual(self.post_json(f"/api/loads/{load_id}/close", {}).status_code, 200)
+        self.assertEqual(self.client.get("/api/products").get_json()[0]["stock"], stock_before)
+        unconfirmed_close = self.post_json(f"/api/loads/{load_id}/close", {})
+        self.assertEqual(unconfirmed_close.status_code, 409)
+        self.assertTrue(unconfirmed_close.get_json()["requires_confirmation"])
+        self.assertEqual(unconfirmed_close.get_json()["summary"]["discrepancies"], 1)
+        confirmed_close = self.post_json(f"/api/loads/{load_id}/close", {"confirm_divergences": True})
+        self.assertEqual(confirmed_close.status_code, 200)
+        self.assertEqual(confirmed_close.get_json()["summary"]["expected"], 6)
+
+    def test_conference_quantity_can_be_corrected_and_last_item_undone_with_audit(self):
+        created = self.post_json("/api/loads", {"reference": "LOAD-EDIT", "supplier": "Fornecedor Alfa"})
+        load_id = created.get_json()["id"]
+        scanned = self.post_json(f"/api/loads/{load_id}/scan", {"barcode": "7891234567890", "expected_quantity": 8, "quantity": 7})
+        self.assertEqual(scanned.status_code, 201)
+        item_id = scanned.get_json()["id"]
+        edited = self.client.put(f"/api/loads/{load_id}/items/{item_id}", json={"quantity": 6}, headers={"X-CSRFToken": self.csrf})
+        self.assertEqual(edited.status_code, 200)
+        self.assertEqual(edited.get_json()["checked"], 6)
+        undone = self.post_json(f"/api/loads/{load_id}/undo-last", {})
+        self.assertEqual(undone.status_code, 200)
+        self.assertEqual(undone.get_json()["quantity"], 6)
+        detail = self.client.get(f"/api/loads/{load_id}").get_json()
+        self.assertIsNone(detail["items"][0]["checked"])
+        with application.app.app_context():
+            actions = [entry.action for entry in application.AuditLog.query.filter_by(entity="carga").all()]
+        self.assertIn("editar_conferencia", actions)
+        self.assertIn("desfazer_conferencia", actions)
+        self.assertEqual(self.post_json(f"/api/loads/{load_id}/scan", {"barcode": "7891234567890", "expected_quantity": 8, "quantity": 7}).status_code, 201)
+        zero = self.client.put(f"/api/loads/{load_id}/items/{item_id}", json={"quantity": 0}, headers={"X-CSRFToken": self.csrf})
+        self.assertEqual(zero.status_code, 200)
+        zero_detail = self.client.get(f"/api/loads/{load_id}").get_json()
+        self.assertEqual(zero_detail["items"][0]["checked"], 0)
+        close = self.post_json(f"/api/loads/{load_id}/close", {})
+        self.assertEqual(close.status_code, 409)
+        self.assertEqual(close.get_json()["summary"]["discrepancies"], 1)
 
     def test_invoice_xml_import_is_idempotent_and_updates_stock(self):
         xml = b'''<NFe><infNFe Id="NFe12345678901234567890123456789012345678901234"><ide><nNF>220</nNF></ide><emit><xNome>Fornecedor XML</xNome></emit><det><prod><cProd>PRD-001</cProd><cEAN>7891234567890</cEAN><xProd>Leitor industrial</xProd><qCom>4.0000</qCom><vUnCom>10.25</vUnCom></prod></det></infNFe></NFe>'''

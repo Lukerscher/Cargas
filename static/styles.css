@@ -180,10 +180,15 @@ tbody tr:hover { background: #fbfcfe; }
 .dispatch-tag { display: inline-flex; padding: 4px 8px; color: #35648e; background: var(--blue-soft); border-radius: 20px; font-size: 9px; font-weight: 700; }
 .dispatch-observations { grid-column: 1 / -1; padding-top: 10px; border-top: 1px solid var(--line); }
 .dispatch-observations p { margin: 0; color: #465a71; white-space: pre-wrap; font-size: 11px; }
-.dispatch-overview { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; padding: 0 16px 15px; }
+.dispatch-overview { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; padding: 0 16px 12px; }
 .dispatch-overview > div { display: grid; gap: 3px; padding: 10px 12px; background: #f6f9fc; border-radius: 6px; }
 .dispatch-overview strong { color: #284663; font: 700 17px var(--display); }
 .dispatch-overview span { color: var(--muted); font-size: 9px; }
+.dispatch-progress { display: grid; gap: 5px; padding: 0 16px 15px; }
+.dispatch-progress > div:first-child { display: flex; justify-content: space-between; color: var(--muted); font-size: 9px; }
+.dispatch-progress strong { color: var(--blue); }
+.scan-actions { display: grid; gap: 6px; }
+.scan-undo-button { color: #52657a; background: #fff; }
 .progress-track { height: 6px; overflow: hidden; background: #e8eef4; border-radius: 8px; }
 .progress-track span { height: 100%; display: block; background: var(--blue); border-radius: inherit; }
 .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
@@ -249,9 +254,12 @@ tbody tr:hover { background: #fbfcfe; }
   .filter-actions { grid-column: 1 / -1; }
   .panel-head { padding-inline: 12px; }
   .scan-area { grid-template-columns: minmax(0, 1fr) minmax(94px, .42fr); padding: 11px; }
-  .scan-area > button[type="submit"] { grid-column: 1 / -1; min-height: 42px; }
   .scan-camera-button { grid-column: auto !important; min-height: 44px; padding-inline: 9px; }
+  .scan-actions { grid-column: 1 / -1; grid-template-columns: 1fr 1fr; }
+  .scan-actions .button { min-height: 42px; padding-inline: 8px; }
   .scan-help { grid-column: 1 / -1; }
+  .dispatch-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .scan-product-confirm { align-items: stretch; flex-direction: column; }
   .settings-grid { grid-template-columns: 1fr; }
   .login-layout { grid-template-columns: 1fr; }
   .login-aside { min-height: 180px; padding: 22px 23px; }
