@@ -128,6 +128,27 @@ function openForm(title, fields, onSubmit, description = "Preencha os dados para
     </form>`;
   dialog.showModal();
   const form = dialogContent.querySelector("form");
+  form.querySelectorAll("[data-multi-search]").forEach((search) => {
+    const fieldName = search.dataset.multiSearch;
+    const options = [...form.querySelectorAll(`[data-multi-option="${fieldName}"]`)];
+    const empty = form.querySelector(`[data-multi-empty="${fieldName}"]`);
+    const count = form.querySelector(`[data-multi-count="${fieldName}"]`);
+    const updateCount = () => {
+      const selected = form.querySelectorAll(`input[name="${fieldName}"]:checked`).length;
+      count.textContent = `${selected} selecionada${selected === 1 ? "" : "s"}`;
+    };
+    search.addEventListener("input", () => {
+      const query = search.value.trim().toLocaleLowerCase("pt-BR");
+      let visible = 0;
+      options.forEach((option) => {
+        option.hidden = !option.textContent.toLocaleLowerCase("pt-BR").includes(query);
+        if (!option.hidden) visible += 1;
+      });
+      empty.hidden = visible > 0;
+    });
+    options.forEach((option) => option.querySelector("input").addEventListener("change", updateCount));
+    updateCount();
+  });
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const submit = form.querySelector('[type="submit"]');
@@ -156,7 +177,9 @@ function renderField(field) {
   const required = field.required ? " required" : "";
   const options = field.options || [];
   let input;
-  if (field.type === "select") {
+  if (field.type === "multiselect") {
+    input = `<div class="multi-select"><input class="input" type="search" data-multi-search="${escapeHtml(field.name)}" placeholder="${escapeHtml(field.searchPlaceholder || "Pesquisar...")}" autocomplete="off" aria-label="Pesquisar ${escapeHtml(field.label)}"><div class="multi-options" role="group" aria-label="${escapeHtml(field.label)}">${options.map((option) => `<label class="multi-option" data-multi-option="${escapeHtml(field.name)}"><input type="checkbox" name="${escapeHtml(field.name)}" value="${escapeHtml(option.value)}"><span>${escapeHtml(option.label)}</span></label>`).join("")}<div class="multi-empty" data-multi-empty="${escapeHtml(field.name)}" hidden>Nenhuma nota encontrada.</div></div><div class="multi-footer" data-multi-count="${escapeHtml(field.name)}">0 selecionadas</div></div>`;
+  } else if (field.type === "select") {
     const multiple = field.multiple ? " multiple size=\"5\"" : "";
     const placeholder = field.multiple ? "" : `<option value="">${escapeHtml(field.placeholder || "Selecione")}</option>`;
     input = `<select class="select" name="${escapeHtml(field.name)}"${multiple}${required}>${placeholder}${options.map((option) => `<option value="${escapeHtml(option.value)}">${escapeHtml(option.label)}</option>`).join("")}</select>`;
@@ -433,7 +456,7 @@ document.addEventListener("click", async (event) => {
       }));
       openForm("Abrir carga", [
         { name: "reference", label: "Referência da carga", required: true, placeholder: "Ex.: CARGA-2026-001" },
-        { name: "invoice_ids", label: "Notas fiscais desta carga", type: "select", multiple: true, options: invoiceOptions, full: true },
+        { name: "invoice_ids", label: "Notas fiscais desta carga", type: "multiselect", searchPlaceholder: "Buscar por número ou fornecedor", options: invoiceOptions, full: true },
         { name: "supplier", label: "Fornecedor (se não selecionar NF)", placeholder: "Transportadora ou fornecedor", full: true },
       ], async (data) => {
         if (!data.invoice_ids.length && !data.supplier.trim()) throw new Error("Selecione uma nota fiscal ou informe o fornecedor.");
