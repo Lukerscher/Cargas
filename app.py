@@ -165,6 +165,9 @@ class Load(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     reference = db.Column(db.String(80), unique=True, nullable=False)
     supplier = db.Column(db.String(180), nullable=False)
+    vehicle_plate = db.Column(db.String(16))
+    driver_name = db.Column(db.String(120))
+    observations = db.Column(db.Text)
     status = db.Column(db.String(16), nullable=False, default="aberta")
     created_by_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
     created_at = db.Column(db.DateTime, nullable=False, default=now_utc)
@@ -724,7 +727,7 @@ def invoice_delete(invoice_id):
 @login_required
 def loads_list():
     loads = Load.query.order_by(Load.created_at.desc()).limit(300).all()
-    return jsonify([{"id": load.id, "reference": load.reference, "supplier": load.supplier, "status": load.status, "created_by": load.created_by.name, "created_at": load.created_at.isoformat(timespec="minutes"), "items": len(load.items), "checked": sum(1 for item in load.items if item.checked_quantity > 0), "invoices": [link.invoice.number for link in load.invoice_links]} for load in loads])
+    return jsonify([{"id": load.id, "reference": load.reference, "supplier": load.supplier, "vehicle_plate": load.vehicle_plate or "", "driver_name": load.driver_name or "", "observations": load.observations or "", "status": load.status, "created_by": load.created_by.name, "created_at": load.created_at.isoformat(timespec="minutes"), "items": len(load.items), "checked": sum(1 for item in load.items if item.checked_quantity > 0), "invoices": [link.invoice.number for link in load.invoice_links]} for load in loads])
 
 
 @app.post("/api/loads")
@@ -744,7 +747,13 @@ def load_create():
             raise ValueError("Uma ou mais notas selecionadas não estão disponíveis.")
         suppliers = sorted({invoice.supplier_name for invoice in invoices})
         supplier = " / ".join(suppliers) if suppliers else required_text(data, "supplier", "o fornecedor")
-        load = Load(reference=reference, supplier=supplier[:180], created_by=current_user)
+        plate = str(data.get("vehicle_plate", "")).strip().upper()
+        driver = str(data.get("driver_name", "")).strip()
+        observations = str(data.get("observations", "")).strip()
+        if len(plate) > 16 or len(driver) > 120 or len(observations) > 2000:
+            raise ValueError("Placa, motorista ou observações excedem o limite de caracteres.")
+        load = Load(reference=reference, supplier=supplier[:180], vehicle_plate=plate or None,
+                    driver_name=driver or None, observations=observations or None, created_by=current_user)
         db.session.add(load)
         db.session.flush()
         expected_by_product = {}
@@ -757,10 +766,11 @@ def load_create():
         for product_id, expected_quantity in expected_by_product.items():
             db.session.add(ConferenceItem(load=load, product_id=product_id, expected_quantity=expected_quantity,
                                           checked_quantity=0, checked_by=current_user))
-        audit("criar", "carga", load.id, {"referencia": reference, "notas": [invoice.number for invoice in invoices], "produtos_previstos": len(expected_by_product)})
+        audit("criar", "carga", load.id, {"referencia": reference, "notas": [invoice.number for invoice in invoices], "placa": plate, "motorista": driver, "produtos_previstos": len(expected_by_product)})
         db.session.commit()
         return jsonify({"id": load.id, "reference": load.reference, "status": load.status,
-                        "invoices": [invoice.number for invoice in invoices], "items": len(expected_by_product)}), 201
+                "invoices": [invoice.number for invoice in invoices], "items": len(expected_by_product),
+                "vehicle_plate": load.vehicle_plate or "", "driver_name": load.driver_name or ""}), 201
     except (ValueError, TypeError) as error:
         db.session.rollback()
         return jsonify(error=str(error)), 400
@@ -770,7 +780,8 @@ def load_create():
 @login_required
 def load_detail(load_id):
     load = db.get_or_404(Load, load_id)
-    return jsonify({"id": load.id, "reference": load.reference, "supplier": load.supplier, "status": load.status,
+    return jsonify({"id": load.id, "reference": load.reference, "supplier": load.supplier,
+                    "vehicle_plate": load.vehicle_plate or "", "driver_name": load.driver_name or "", "observations": load.observations or "", "status": load.status,
                     "invoices": [{"id": link.invoice.id, "number": link.invoice.number, "supplier": link.invoice.supplier_name} for link in load.invoice_links],
                     "items": [{"id": item.id, "product_id": item.product_id, "code": item.product.code, "barcode": item.product.barcode or "", "name": item.product.name, "unit": item.product.unit, "expected": item.expected_quantity, "checked": item.checked_quantity if item.checked_quantity > 0 else None, "checked_by": item.checked_by.name if item.checked_quantity > 0 else ""} for item in load.items]})
 
@@ -1101,6 +1112,7 @@ with app.app_context():
     movement_columns = {column["name"] for column in inspector.get_columns("movement")}
     invoice_columns = {column["name"] for column in inspector.get_columns("invoice")}
     product_columns = {column["name"] for column in inspector.get_columns("product")}
+    load_columns = {column["name"] for column in inspector.get_columns("load")}
     with db.engine.begin() as connection:
         if "invoice_id" not in movement_columns:
             connection.exec_driver_sql("ALTER TABLE movement ADD COLUMN invoice_id INTEGER REFERENCES invoice(id)")
@@ -1114,6 +1126,12 @@ with app.app_context():
         if "source_invoice_id" not in product_columns:
             connection.exec_driver_sql("ALTER TABLE product ADD COLUMN source_invoice_id INTEGER REFERENCES invoice(id)")
             connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_product_source_invoice_id ON product (source_invoice_id)")
+        if "vehicle_plate" not in load_columns:
+            connection.exec_driver_sql("ALTER TABLE load ADD COLUMN vehicle_plate VARCHAR(16)")
+        if "driver_name" not in load_columns:
+            connection.exec_driver_sql("ALTER TABLE load ADD COLUMN driver_name VARCHAR(120)")
+        if "observations" not in load_columns:
+            connection.exec_driver_sql("ALTER TABLE load ADD COLUMN observations TEXT")
 
     for invoice in Invoice.query.filter_by(status="importada").all():
         legacy_items = InvoiceItem.query.filter_by(invoice_id=invoice.id).filter(InvoiceItem.product_id.isnot(None)).all()

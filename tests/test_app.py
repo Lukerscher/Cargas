@@ -85,13 +85,17 @@ class AlmoxControlTests(unittest.TestCase):
         second_imported = self.client.post("/api/invoices/import", data={"file": (BytesIO(second_xml), "nf-229.xml")}, headers={"X-CSRFToken": self.csrf}, content_type="multipart/form-data")
         invoice_id = imported.get_json()["id"]
         second_invoice_id = second_imported.get_json()["id"]
-        created = self.post_json("/api/loads", {"reference": "LOAD-NF-228-229", "invoice_ids": [invoice_id, second_invoice_id]})
+        created = self.post_json("/api/loads", {"reference": "LOAD-NF-228-229", "invoice_ids": [invoice_id, second_invoice_id], "vehicle_plate": "abc1d23", "driver_name": "João Motorista", "observations": "Entregar pela doca 2"})
         self.assertEqual(created.status_code, 201, created.get_json())
         load_id = created.get_json()["id"]
         self.assertEqual(created.get_json()["items"], 1)
         self.assertEqual(created.get_json()["invoices"], ["228", "229"])
+        self.assertEqual(created.get_json()["vehicle_plate"], "ABC1D23")
         before = self.client.get(f"/api/loads/{load_id}").get_json()
         self.assertEqual(before["invoices"][0]["number"], "228")
+        self.assertEqual(before["vehicle_plate"], "ABC1D23")
+        self.assertEqual(before["driver_name"], "João Motorista")
+        self.assertEqual(before["observations"], "Entregar pela doca 2")
         self.assertIsNone(before["items"][0]["checked"])
         self.assertEqual(before["items"][0]["expected"], 6)
         pending_close = self.post_json(f"/api/loads/{load_id}/close", {})

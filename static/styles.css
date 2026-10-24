@@ -149,6 +149,8 @@ tbody tr:hover { background: #fbfcfe; }
 .load-chip strong, .load-chip span { display: block; }
 .load-chip strong { font-size: 10px; }
 .load-chip span { margin-top: 3px; color: var(--muted); font-size: 9px; }
+.load-meta { display: flex; flex-wrap: wrap; gap: 7px 16px; padding: 10px 15px; color: #667a8f; border-bottom: 1px solid var(--line); font-size: 10px; }
+.load-observations { flex-basis: 100%; white-space: pre-wrap; }
 .progress-track { height: 6px; overflow: hidden; background: #e8eef4; border-radius: 8px; }
 .progress-track span { height: 100%; display: block; background: var(--blue); border-radius: inherit; }
 .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
