@@ -28,6 +28,103 @@ const formatNumber = (value) => new Intl.NumberFormat("pt-BR", { maximumFraction
 const formatDate = (value) => value ? new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(new Date(value)) : "-";
 const statusPill = (label, type = "neutral") => `<span class="status status-${type}">${escapeHtml(label)}</span>`;
 const isAdmin = user.role === "administrador";
+const cameraDialog = document.querySelector("#camera-dialog");
+const cameraVideo = document.querySelector("#camera-video");
+const cameraStatus = document.querySelector("#camera-status");
+let cameraStream = null;
+let cameraControls = null;
+let cameraFrame = null;
+
+function stopCameraScanner() {
+  if (cameraFrame !== null) cancelAnimationFrame(cameraFrame);
+  cameraFrame = null;
+  cameraControls?.stop();
+  cameraControls = null;
+  cameraStream?.getTracks().forEach((track) => track.stop());
+  cameraStream = null;
+  cameraVideo.srcObject = null;
+}
+
+function finishCameraScan(barcode) {
+  if (!barcode) return;
+  stopCameraScanner();
+  cameraDialog.close();
+  const input = content.querySelector("#scan-barcode");
+  if (!input) return;
+  input.value = barcode;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.focus();
+  toast("Código lido. Confira o produto e confirme antes de informar a quantidade.");
+}
+
+async function startCameraScanner() {
+  if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+    toast("A câmera requer HTTPS e permissão do navegador. Abra o sistema pelo endereço seguro.", "error");
+    return;
+  }
+  cameraDialog.showModal();
+  cameraStatus.textContent = "Solicitando acesso à câmera...";
+  try {
+    cameraStream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
+    });
+    cameraVideo.srcObject = cameraStream;
+    await cameraVideo.play();
+    if ("BarcodeDetector" in window) {
+      const available = await window.BarcodeDetector.getSupportedFormats();
+      const formats = ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_39", "itf", "qr_code"]
+        .filter((format) => available.includes(format));
+      const detector = new window.BarcodeDetector(formats.length ? { formats } : undefined);
+      cameraStatus.textContent = "Aponte a câmera traseira para o código de barras.";
+      const detectFrame = async () => {
+        if (!cameraDialog.open || !cameraStream) return;
+        try {
+          const codes = await detector.detect(cameraVideo);
+          if (codes[0]?.rawValue) {
+            finishCameraScan(codes[0].rawValue);
+            return;
+          }
+        } catch {
+          cameraStatus.textContent = "Não foi possível ler a imagem. Aproxime ou ajuste o foco.";
+        }
+        cameraFrame = requestAnimationFrame(detectFrame);
+      };
+      cameraFrame = requestAnimationFrame(detectFrame);
+      return;
+    }
+
+    cameraStatus.textContent = "Carregando leitor compatível com este navegador...";
+    const { BrowserMultiFormatReader } = await import("https://esm.sh/@zxing/browser@0.1.5");
+    const reader = new BrowserMultiFormatReader();
+    cameraControls = await reader.decodeFromVideoElement(cameraVideo, (result) => {
+      const value = result && (typeof result.getText === "function" ? result.getText() : result.text);
+      if (value) finishCameraScan(value);
+    });
+    cameraStatus.textContent = "Aponte a câmera traseira para o código de barras.";
+  } catch (error) {
+    stopCameraScanner();
+    cameraStatus.textContent = error.name === "NotAllowedError"
+      ? "Permita o acesso à câmera nas configurações do navegador e tente novamente."
+      : "Não foi possível iniciar a câmera. Verifique a permissão e tente novamente.";
+  }
+}
+
+document.querySelector("#camera-close").addEventListener("click", () => {
+  stopCameraScanner();
+  cameraDialog.close();
+});
+document.querySelector("#camera-cancel").addEventListener("click", () => {
+  stopCameraScanner();
+  cameraDialog.close();
+});
+cameraDialog.addEventListener("cancel", stopCameraScanner);
+cameraDialog.addEventListener("click", (event) => {
+  if (event.target === cameraDialog) {
+    stopCameraScanner();
+    cameraDialog.close();
+  }
+});
 
 document.querySelector("#user-name").textContent = user.name;
 document.querySelector("#user-role").textContent = user.role_label;
@@ -302,16 +399,47 @@ async function renderLoads() {
   const observations = selected.observations ? `<div class="dispatch-observations"><span>Observações</span><p>${escapeHtml(selected.observations)}</p></div>` : "";
   const metadata = `<div class="dispatch-details"><div><span>Fornecedor</span><strong>${escapeHtml(selected.supplier)}</strong></div><div><span>Veículo</span><strong>${escapeHtml(selected.vehicle_plate || "Não informada")}</strong></div><div><span>Motorista</span><strong>${escapeHtml(selected.driver_name || "Não informado")}</strong></div><div class="dispatch-invoices"><span>Notas fiscais</span><div>${invoiceTags || "<span class=\"table-count\">Sem NF vinculada</span>"}</div></div>${observations}</div>`;
   const overview = `<div class="dispatch-overview"><div><strong>${checkedItems}/${selected.items.length}</strong><span>Produtos conferidos</span></div><div><strong>${pendingItems}</strong><span>Pendentes</span></div><div><strong>${discrepancies}</strong><span>Divergências</span></div></div>`;
-  const scanForm = `<form class="scan-area" id="scan-form" data-load-id="${selected.id}"><div class="field"><label for="scan-barcode">Código de barras</label><input class="input scan-input" id="scan-barcode" name="barcode" autocomplete="off" placeholder="Leia ou digite o código" required></div><div class="field"><label for="scan-expected">Quantidade prevista</label><input class="input scan-input" id="scan-expected" name="expected_quantity" type="number" min="0.001" step="0.001" placeholder="Preenchida pela NF"></div><div class="field"><label for="scan-quantity">Quantidade recebida</label><input class="input scan-input" id="scan-quantity" name="quantity" type="number" min="0.001" step="0.001" placeholder="Total recebido" required></div><button class="button button-primary" type="submit">Registrar produto</button><p class="scan-help">Leia uma vez por produto e informe o total recebido. A quantidade prevista é preenchida automaticamente para os itens da NF.</p></form>`;
+  const scanForm = `<form class="scan-area" id="scan-form" data-load-id="${selected.id}"><div class="field"><label for="scan-barcode">Código de barras</label><input class="input scan-input" id="scan-barcode" name="barcode" autocomplete="off" placeholder="Leia ou digite o código" required></div><button class="button scan-camera-button" id="scan-camera" type="button"><span aria-hidden="true">▣</span> Câmera</button><div class="field"><label for="scan-expected">Quantidade prevista</label><input class="input scan-input" id="scan-expected" name="expected_quantity" type="number" min="0.001" step="0.001" placeholder="Preenchida pela NF"></div><div class="field"><label for="scan-quantity">Quantidade recebida</label><input class="input scan-input" id="scan-quantity" name="quantity" type="number" min="0.001" step="0.001" placeholder="Total recebido" required></div><button class="button button-primary" type="submit">Registrar produto</button><div class="scan-product-confirm" id="scan-product-confirm" hidden><div><strong id="scan-product-name"></strong><span id="scan-product-detail"></span></div><button class="button button-primary" id="confirm-scan-product" type="button">Confirmar produto</button></div><p class="scan-help">Leia uma vez por produto, confira o nome identificado e informe o total recebido.</p></form>`;
   const closeButton = canStock ? `<button class="button button-small" data-action="close-load" data-id="${selected.id}">Encerrar expedição</button>` : "";
   content.innerHTML = `${introHtml}<div class="dispatch-layout"><aside class="dispatch-sidebar">${loadPanel}</aside><section class="dispatch-main">${panel(`Expedição ${selected.reference}`, metadata + overview, { subtitle: `Aberta por ${selected.created_by} · ${formatDate(selected.created_at)}`, action: closeButton })}${panel("Conferir produtos", scanForm, { subtitle: "Leitura de código de barras e conferência de quantidade" })}${panel("Itens da expedição", table(["Produto", "Esperado", "Conferido", "Situação", "Responsável"], detailRows, selected.items.length))}</section></div>`;
   content.dataset.loadProducts = JSON.stringify(products);
   const barcodeInput = content.querySelector("#scan-barcode");
   const expectedInput = content.querySelector("#scan-expected");
+  const quantityInput = content.querySelector("#scan-quantity");
+  const productPreview = content.querySelector("#scan-product-confirm");
+  const productName = content.querySelector("#scan-product-name");
+  const productDetail = content.querySelector("#scan-product-detail");
+  const confirmProductButton = content.querySelector("#confirm-scan-product");
+  const scanFormElement = content.querySelector("#scan-form");
+  content.querySelector("#scan-camera")?.addEventListener("click", startCameraScanner);
   barcodeInput?.addEventListener("input", () => {
-    const matched = selected.items.find((item) => item.barcode && item.barcode === barcodeInput.value.trim() && item.checked === null);
-    expectedInput.value = matched ? matched.expected : "";
-    expectedInput.readOnly = Boolean(matched);
+    const barcode = barcodeInput.value.trim();
+    const product = products.find((item) => item.barcode && item.barcode === barcode);
+    const expectedItem = selected.items.find((item) => item.barcode && item.barcode === barcode);
+    scanFormElement.dataset.confirmedBarcode = "";
+    confirmProductButton.disabled = true;
+    confirmProductButton.textContent = "Confirmar produto";
+    expectedInput.value = expectedItem ? expectedItem.expected : "";
+    expectedInput.readOnly = Boolean(expectedItem);
+    productPreview.hidden = !barcode;
+    if (!barcode) return;
+    if (!product) {
+      productName.textContent = "Produto não encontrado";
+      productDetail.textContent = "Cadastre o código de barras no produto antes da conferência.";
+      return;
+    }
+    const alreadyChecked = expectedItem && expectedItem.checked !== null;
+    productName.textContent = product.name;
+    productDetail.textContent = expectedItem
+      ? `Código ${product.code} · ${formatNumber(expectedItem.expected)} ${product.unit} previstas${alreadyChecked ? " · já conferido" : ""}`
+      : `Código ${product.code} · produto fora das NF selecionadas`;
+    confirmProductButton.disabled = Boolean(alreadyChecked);
+  });
+  confirmProductButton?.addEventListener("click", () => {
+    scanFormElement.dataset.confirmedBarcode = barcodeInput.value.trim();
+    confirmProductButton.textContent = "Produto confirmado";
+    confirmProductButton.disabled = true;
+    quantityInput.focus();
   });
   barcodeInput?.focus();
 }
@@ -582,6 +710,11 @@ document.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.target;
     const data = Object.fromEntries(new FormData(form));
+    if (form.dataset.confirmedBarcode !== String(data.barcode || "").trim()) {
+      toast("Leia o código e confirme o nome do produto antes de registrar.", "error");
+      form.querySelector("#scan-barcode")?.focus();
+      return;
+    }
     const submit = form.querySelector('[type="submit"]');
     submit.disabled = true;
     try {

@@ -48,5 +48,11 @@
   </div>
   <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
   <dialog class="form-dialog" id="form-dialog"><div class="dialog-content" id="dialog-content"></div></dialog>
+  <dialog class="camera-dialog" id="camera-dialog" aria-labelledby="camera-title">
+    <div class="camera-dialog-head"><div><h2 id="camera-title">Ler código de barras</h2><p>Aponte a câmera traseira para o código do produto.</p></div><button class="icon-button" type="button" id="camera-close" aria-label="Fechar câmera">×</button></div>
+    <div class="camera-preview"><video id="camera-video" autoplay muted playsinline></video><span class="camera-frame" aria-hidden="true"></span></div>
+    <p class="camera-status" id="camera-status" role="status" aria-live="polite">Aguardando permissão para usar a câmera...</p>
+    <div class="camera-dialog-actions"><button class="button" type="button" id="camera-cancel">Cancelar leitura</button></div>
+  </dialog>
 </body>
 </html>
